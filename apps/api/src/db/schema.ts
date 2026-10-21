@@ -15,6 +15,7 @@ import {
 import { ulid } from "ulid";
 
 export const channelMemberRole = pgEnum("channel_member_role", ["admin", "member"]);
+export const userRole = pgEnum("user_role", ["user", "admin"]);
 
 export const users = pgTable(
   "users",
@@ -23,6 +24,8 @@ export const users = pgTable(
     email: text("email").notNull(),
     displayName: varchar("display_name", { length: 80 }).notNull(),
     passwordHash: text("password_hash").notNull(),
+    role: userRole("role").notNull().default("user"),
+    bannedAt: timestamp("banned_at", { withTimezone: true }),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
   },
   (table) => [uniqueIndex("users_email_lower_unique").on(sql`lower(${table.email})`)],
@@ -44,7 +47,9 @@ export const channels = pgTable(
 export const messages = pgTable(
   "messages",
   {
-    id: varchar("id", { length: 26 }).$defaultFn(() => ulid()).primaryKey(),
+    id: varchar("id", { length: 26 })
+      .$defaultFn(() => ulid())
+      .primaryKey(),
     channelId: uuid("channel_id")
       .notNull()
       .references(() => channels.id, { onDelete: "cascade" }),
