@@ -8,6 +8,13 @@
       "when": 1792571751267,
       "tag": "0000_fast_amphibian",
       "breakpoints": true
+    },
+    {
+      "idx": 1,
+      "version": "7",
+      "when": 1792600574690,
+      "tag": "0001_yellow_ezekiel",
+      "breakpoints": true
     }
   ]
 }
