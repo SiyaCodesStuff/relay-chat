@@ -2,6 +2,15 @@ import { randomBytes } from "node:crypto";
 
 export const sessionCookieName = "relay_session";
 
+export function readCookie(cookieHeader: string | undefined, name: string) {
+  if (!cookieHeader) return undefined;
+  for (const entry of cookieHeader.split(";")) {
+    const [key, ...value] = entry.trim().split("=");
+    if (key === name) return value.join("=");
+  }
+  return undefined;
+}
+
 export type RedisConnection = {
   set(key: string, value: string, options: { EX: number }): Promise<unknown>;
   get(key: string): Promise<string | null>;

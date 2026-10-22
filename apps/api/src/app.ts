@@ -10,7 +10,12 @@ import {
   registerRequestSchema,
 } from "@relay-chat/shared";
 import { createRedisRateLimiter } from "./auth/rate-limit.js";
-import { createSessionStore, sessionCookieName, type RedisConnection } from "./auth/session.js";
+import {
+  createSessionStore,
+  readCookie,
+  sessionCookieName,
+  type RedisConnection,
+} from "./auth/session.js";
 import type { Database } from "./db/client.js";
 import { channelMembers, channels, messages, users } from "./db/schema.js";
 
@@ -28,16 +33,6 @@ export type AuthAppOptions = {
   loginRateLimit?: { limit: number; windowSeconds: number };
   registerRateLimit?: { limit: number; windowSeconds: number };
 };
-
-function readCookie(request: Request, name: string) {
-  const cookies = request.header("cookie");
-  if (!cookies) return undefined;
-  for (const entry of cookies.split(";")) {
-    const [key, ...value] = entry.trim().split("=");
-    if (key === name) return value.join("=");
-  }
-  return undefined;
-}
 
 function setSessionCookie(response: Response, id: string, secure: boolean) {
   response.cookie(sessionCookieName, id, {
@@ -100,7 +95,7 @@ export function createApp(options: AuthAppOptions) {
   }
 
   async function requireSession(request: Request, response: Response, next: NextFunction) {
-    const sessionId = readCookie(request, sessionCookieName);
+    const sessionId = readCookie(request.header("cookie"), sessionCookieName);
     const session = await sessions.read(sessionId ?? "");
     if (!session) {
       clearSessionCookie(response, secureCookie);
@@ -186,7 +181,7 @@ export function createApp(options: AuthAppOptions) {
         });
       if (!user) throw new Error("User creation did not return a user.");
 
-      await sessions.destroy(readCookie(request, sessionCookieName));
+      await sessions.destroy(readCookie(request.header("cookie"), sessionCookieName));
       setSessionCookie(response, await sessions.create(user.id), secureCookie);
       response.status(201).json({ user: identity(user) });
     } catch (error) {
@@ -243,7 +238,7 @@ export function createApp(options: AuthAppOptions) {
         return;
       }
 
-      await sessions.destroy(readCookie(request, sessionCookieName));
+      await sessions.destroy(readCookie(request.header("cookie"), sessionCookieName));
       setSessionCookie(response, await sessions.create(user.id), secureCookie);
       response.status(200).json({ user: identity(user) });
     } catch (error) {
@@ -253,7 +248,7 @@ export function createApp(options: AuthAppOptions) {
 
   app.post("/api/v1/auth/logout", requireCsrf, async (request, response, next) => {
     try {
-      await sessions.destroy(readCookie(request, sessionCookieName));
+      await sessions.destroy(readCookie(request.header("cookie"), sessionCookieName));
       clearSessionCookie(response, secureCookie);
       response.status(204).end();
     } catch (error) {
