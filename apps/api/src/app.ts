@@ -1,11 +1,18 @@
 import argon2 from "argon2";
-import { eq } from "drizzle-orm";
+import { and, asc, desc, eq, isNull, lt, or, sql } from "drizzle-orm";
 import express, { type NextFunction, type Request, type Response } from "express";
-import { loginRequestSchema, registerRequestSchema } from "@relay-chat/shared";
+import {
+  channelIdParamsSchema,
+  createChannelRequestSchema,
+  listMessagesQuerySchema,
+  loginRequestSchema,
+  markChannelReadRequestSchema,
+  registerRequestSchema,
+} from "@relay-chat/shared";
 import { createRedisRateLimiter } from "./auth/rate-limit.js";
 import { createSessionStore, sessionCookieName, type RedisConnection } from "./auth/session.js";
 import type { Database } from "./db/client.js";
-import { users } from "./db/schema.js";
+import { channelMembers, channels, messages, users } from "./db/schema.js";
 
 const csrfHeader = "x-csrf-request";
 const authFailure = { error: "AUTHENTICATION_FAILED" };
@@ -52,6 +59,14 @@ function identity(user: {
   role: "user" | "admin";
 }) {
   return { id: user.id, email: user.email, displayName: user.displayName, role: user.role };
+}
+
+function invalidRequest(response: Response) {
+  response.status(400).json({ error: "INVALID_REQUEST" });
+}
+
+function notFound(response: Response) {
+  response.status(404).json({ error: "NOT_FOUND" });
 }
 
 export function createApp(options: AuthAppOptions) {
@@ -113,6 +128,27 @@ export function createApp(options: AuthAppOptions) {
 
     response.locals.authenticatedUser = user;
     next();
+  }
+
+  async function findAccessibleChannel(channelId: string, userId: string) {
+    const [channel] = await options.db
+      .select({
+        id: channels.id,
+        name: channels.name,
+        isPrivate: channels.isPrivate,
+        createdBy: channels.createdBy,
+        memberUserId: channelMembers.userId,
+        memberRole: channelMembers.role,
+      })
+      .from(channels)
+      .leftJoin(
+        channelMembers,
+        and(eq(channelMembers.channelId, channels.id), eq(channelMembers.userId, userId)),
+      )
+      .where(eq(channels.id, channelId));
+
+    if (!channel || (channel.isPrivate && channel.memberUserId === null)) return undefined;
+    return channel;
   }
 
   app.post("/api/v1/auth/register", requireCsrf, async (request, response, next) => {
@@ -228,6 +264,253 @@ export function createApp(options: AuthAppOptions) {
   app.get("/api/v1/auth/me", requireSession, (_request, response) => {
     response.status(200).json({ user: identity(response.locals.authenticatedUser) });
   });
+
+  app.post("/api/v1/channels", requireSession, requireCsrf, async (request, response, next) => {
+    try {
+      const payload = createChannelRequestSchema.safeParse(request.body);
+      if (!payload.success) {
+        invalidRequest(response);
+        return;
+      }
+
+      const userId = response.locals.authenticatedUser.id as string;
+      const channel = await options.db.transaction(async (transaction) => {
+        const [created] = await transaction
+          .insert(channels)
+          .values({
+            name: payload.data.name,
+            isPrivate: payload.data.isPrivate,
+            createdBy: userId,
+          })
+          .returning({
+            id: channels.id,
+            name: channels.name,
+            isPrivate: channels.isPrivate,
+            createdBy: channels.createdBy,
+          });
+        if (!created) throw new Error("Channel creation did not return a channel.");
+        await transaction
+          .insert(channelMembers)
+          .values({ channelId: created.id, userId, role: "admin" });
+        return created;
+      });
+
+      response.status(201).json({ channel: { ...channel, unreadCount: 0 } });
+    } catch (error) {
+      const cause = error instanceof Error && "cause" in error ? error.cause : error;
+      if (
+        typeof cause === "object" &&
+        cause !== null &&
+        "code" in cause &&
+        cause.code === "23505"
+      ) {
+        response.status(409).json({ error: "CHANNEL_EXISTS" });
+        return;
+      }
+      next(error);
+    }
+  });
+
+  app.get("/api/v1/channels", requireSession, async (_request, response, next) => {
+    try {
+      const userId = response.locals.authenticatedUser.id as string;
+      const unreadCount = sql<number>`
+        CASE
+          WHEN ${channelMembers.userId} IS NULL THEN 0
+          ELSE (
+            SELECT count(*)::int
+            FROM ${messages}
+            WHERE ${messages.channelId} = ${channels.id}
+              AND ${messages.deletedAt} IS NULL
+              AND (
+                ${channelMembers.lastReadMessageId} IS NULL
+                OR ${messages.id} > ${channelMembers.lastReadMessageId}
+              )
+          )
+        END
+      `;
+      const listedChannels = await options.db
+        .select({
+          id: channels.id,
+          name: channels.name,
+          isPrivate: channels.isPrivate,
+          createdBy: channels.createdBy,
+          unreadCount,
+        })
+        .from(channels)
+        .leftJoin(
+          channelMembers,
+          and(eq(channelMembers.channelId, channels.id), eq(channelMembers.userId, userId)),
+        )
+        .where(or(eq(channels.isPrivate, false), eq(channelMembers.userId, userId)))
+        .orderBy(asc(channels.name));
+
+      response.status(200).json({
+        channels: listedChannels.map((channel) => ({
+          ...channel,
+          unreadCount: Number(channel.unreadCount),
+        })),
+      });
+    } catch (error) {
+      next(error);
+    }
+  });
+
+  app.post(
+    "/api/v1/channels/:channelId/join",
+    requireSession,
+    requireCsrf,
+    async (request, response, next) => {
+      try {
+        const params = channelIdParamsSchema.safeParse(request.params);
+        if (!params.success) {
+          invalidRequest(response);
+          return;
+        }
+        const userId = response.locals.authenticatedUser.id as string;
+        const channel = await findAccessibleChannel(params.data.channelId, userId);
+        if (!channel || channel.isPrivate) {
+          notFound(response);
+          return;
+        }
+
+        await options.db
+          .insert(channelMembers)
+          .values({ channelId: channel.id, userId })
+          .onConflictDoNothing();
+        response.status(204).end();
+      } catch (error) {
+        next(error);
+      }
+    },
+  );
+
+  app.post(
+    "/api/v1/channels/:channelId/leave",
+    requireSession,
+    requireCsrf,
+    async (request, response, next) => {
+      try {
+        const params = channelIdParamsSchema.safeParse(request.params);
+        if (!params.success) {
+          invalidRequest(response);
+          return;
+        }
+        const userId = response.locals.authenticatedUser.id as string;
+        const channel = await findAccessibleChannel(params.data.channelId, userId);
+        if (!channel || channel.memberUserId === null) {
+          notFound(response);
+          return;
+        }
+
+        await options.db
+          .delete(channelMembers)
+          .where(and(eq(channelMembers.channelId, channel.id), eq(channelMembers.userId, userId)));
+        response.status(204).end();
+      } catch (error) {
+        next(error);
+      }
+    },
+  );
+
+  app.get(
+    "/api/v1/channels/:channelId/messages",
+    requireSession,
+    async (request, response, next) => {
+      try {
+        const params = channelIdParamsSchema.safeParse(request.params);
+        const query = listMessagesQuerySchema.safeParse(request.query);
+        if (!params.success || !query.success) {
+          invalidRequest(response);
+          return;
+        }
+        const userId = response.locals.authenticatedUser.id as string;
+        const channel = await findAccessibleChannel(params.data.channelId, userId);
+        if (!channel) {
+          notFound(response);
+          return;
+        }
+
+        const conditions = [eq(messages.channelId, channel.id), isNull(messages.deletedAt)];
+        if (query.data.before) conditions.push(lt(messages.id, query.data.before));
+        const page = await options.db
+          .select({
+            id: messages.id,
+            channelId: messages.channelId,
+            userId: messages.userId,
+            body: messages.body,
+            createdAt: messages.createdAt,
+            editedAt: messages.editedAt,
+          })
+          .from(messages)
+          .where(and(...conditions))
+          .orderBy(desc(messages.id))
+          .limit(query.data.limit + 1);
+        const hasMore = page.length > query.data.limit;
+        const pageMessages = hasMore ? page.slice(0, query.data.limit) : page;
+
+        response.status(200).json({
+          messages: pageMessages,
+          nextCursor: hasMore ? (pageMessages.at(-1)?.id ?? null) : null,
+        });
+      } catch (error) {
+        next(error);
+      }
+    },
+  );
+
+  app.post(
+    "/api/v1/channels/:channelId/read",
+    requireSession,
+    requireCsrf,
+    async (request, response, next) => {
+      try {
+        const params = channelIdParamsSchema.safeParse(request.params);
+        const payload = markChannelReadRequestSchema.safeParse(request.body);
+        if (!params.success || !payload.success) {
+          invalidRequest(response);
+          return;
+        }
+        const userId = response.locals.authenticatedUser.id as string;
+        const channel = await findAccessibleChannel(params.data.channelId, userId);
+        if (!channel || channel.memberUserId === null) {
+          notFound(response);
+          return;
+        }
+        const [message] = await options.db
+          .select({ id: messages.id })
+          .from(messages)
+          .where(
+            and(
+              eq(messages.id, payload.data.messageId),
+              eq(messages.channelId, channel.id),
+              isNull(messages.deletedAt),
+            ),
+          );
+        if (!message) {
+          notFound(response);
+          return;
+        }
+
+        await options.db
+          .update(channelMembers)
+          .set({ lastReadMessageId: message.id })
+          .where(
+            and(
+              eq(channelMembers.channelId, channel.id),
+              eq(channelMembers.userId, userId),
+              or(
+                isNull(channelMembers.lastReadMessageId),
+                lt(channelMembers.lastReadMessageId, message.id),
+              ),
+            ),
+          );
+        response.status(204).end();
+      } catch (error) {
+        next(error);
+      }
+    },
+  );
 
   app.use((_request, response) => response.status(404).json({ error: "NOT_FOUND" }));
   app.use((_error: unknown, _request: Request, response: Response, _next: NextFunction) => {
