@@ -18,6 +18,7 @@ import { channels, messages, users } from "../src/db/schema.js";
 import { createSocketServer } from "../src/socket.js";
 import { createPresenceStore } from "../src/presence.js";
 import { attachRedisAdapter } from "../src/socket-adapter.js";
+import { createReliableChatClient } from "@relay-chat/shared";
 
 const origin = "http://localhost:5173";
 const csrfHeaders = { origin, "x-csrf-request": "1" };
@@ -159,6 +160,81 @@ afterAll(async () => {
 });
 
 describe("Socket.IO chat events", () => {
+  it("catches up after a disconnect without missing or duplicating messages", async () => {
+    const server = await startSocketServer();
+    const sockets: ClientSocket[] = [];
+    let client: ReturnType<typeof createReliableChatClient> | undefined;
+    try {
+      const owner = await register(server.app);
+      const reader = await register(server.app);
+      const created = await owner.agent
+        .post("/api/v1/channels")
+        .set(csrfHeaders)
+        .send({ name: `reconnect-${randomUUID()}` })
+        .expect(201);
+      const channelId = created.body.channel.id as string;
+      ownedChannelIds.push(channelId);
+      await reader.agent.post(`/api/v1/channels/${channelId}/join`).set(csrfHeaders).expect(204);
+      const sender = await connect(server.url, owner.cookie);
+      const receiver = await connect(server.url, reader.cookie);
+      sockets.push(sender, receiver);
+      let onSynced = () => {};
+      const initialSync = new Promise<void>((resolve) => {
+        onSynced = resolve;
+      });
+      const received: MessageNew[] = [];
+      const errors: string[] = [];
+      client = createReliableChatClient({
+        socket: receiver,
+        channels: { [channelId]: null },
+        onMessage: (message) => received.push(message),
+        onSendState: () => {},
+        onSyncError: (_channel, error) => errors.push(error),
+        onSynced: () => onSynced(),
+      });
+      await initialSync;
+      const stored: MessageNew[] = [];
+      const send = async () => {
+        const result = await sendMessage(sender, {
+          channelId,
+          body: `Message ${stored.length}`,
+          clientMessageId: randomUUID(),
+        });
+        if (!result.ok) throw new Error(result.error.code);
+        stored.push(result.message);
+      };
+      const firstLive = new Promise<void>((resolve) =>
+        receiver.once("message:new", () => resolve()),
+      );
+      await send();
+      await firstLive;
+      expect(client.getLastSeen()[channelId]).toBe(stored[0]?.id);
+      receiver.disconnect();
+      await send();
+      await send();
+      await send();
+      const resynced = new Promise<void>((resolve) => {
+        onSynced = resolve;
+      });
+      receiver.connect();
+      await resynced;
+      expect(errors).toEqual([]);
+      expect(received).toEqual(stored);
+      expect(new Set(received.map((message) => message.id)).size).toBe(stored.length);
+      // A repeated reconnect with the same cursor must not re-deliver history.
+      const repeat = new Promise<void>((resolve) => {
+        onSynced = resolve;
+      });
+      await client.reconnect();
+      await repeat;
+      expect(received).toEqual(stored);
+    } finally {
+      client?.dispose();
+      for (const socket of sockets) socket.disconnect();
+      await server.close();
+    }
+  });
+
   it("delivers across two instances and counts one user's tabs across both", async () => {
     const prefix = `relay:test:cluster:${randomUUID()}:`;
     const first = await startSocketServer(prefix);

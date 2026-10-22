@@ -1,5 +1,15 @@
 # Socket event contract
 
+## Reconnect and reliable sends
+
+`channel:sync` accepts `{ channelId, after: messageId | null, lastSeen?: messageId | null }` and requires current membership. On reconnect, the client sends its latest observed ID as `lastSeen` and its confirmed history checkpoint as `after`. The server queries from `after` to include any unseen messages below an out-of-order live ID. It acknowledges `{ ok: true, messages, hasMore }` or `{ ok: false, error }`. Each page contains up to 100 non-deleted stored messages, strictly ascending by ID and strictly after the supplied cursor. Continue from the last returned ID while `hasMore` is true; `null` starts at the beginning. Live room delivery is enabled before querying history, so history/live overlap is expected. Messages and send acknowledgements include `clientMessageId`.
+
+Use `createReliableChatClient` from `@relay-chat/shared` with an injected Socket.IO-compatible socket, per-channel history checkpoints, and callbacks `onMessage`, `onSendState`, and `onSyncError`. `onSynced` optionally signals catch-up completion. The module is independent of React. It buffers live events during sync, processes ascending history pages, and deduplicates by stored ID and `(userId, clientMessageId)`. Only ordered catch-up pages advance checkpoints; live events may arrive out of order across instances, so reconnect deliberately replays overlap rather than skipping an unseen message. Socket message ID allocation is serialized through a PostgreSQL transaction advisory lock, ensuring new IDs advance in commit order even across instances or clock changes.
+
+Call `send({ channelId, body, clientMessageId })` with one generated ID per logical send. Offline sends remain queued; connection loss requeues in-flight sends. All transport retries reuse that ID. Acknowledgements time out after 5 seconds; sends try at most three times before becoming `failed`. `onSendState` exposes queued/sending/sent/failed states and error codes, including `ACK_TIMEOUT`. Server rejections fail immediately. `retry(clientMessageId)` explicitly retries a failed send with its original ID. The default pending-send limit is 100; a full queue throws `SEND_QUEUE_FULL` rather than dropping a message. A sync timeout/error calls `onSyncError` and leaves queued sends intact; call `reconnect()` to retry synchronization.
+
+`getMessages()` returns the deduplicated collection in ascending ID order for rendering, `getSends()` exposes queue state, and `getCursors()` exposes safe history checkpoints. Call `dispose()` when leaving a chat session. This queue survives network disconnects for the lifetime of the module; it is in memory and does not survive a page reload. Persisting browser drafts or queues across reloads is outside this contract. Catch-up recovers messages, not edit/deletion events.
+
 Connect to the Socket.IO server with the `relay_session` cookie and an `Origin` value listed in `ALLOWED_ORIGINS`. Connections without either are rejected. The server joins the socket to each channel the authenticated user currently belongs to.
 
 ## Multiple API instances
