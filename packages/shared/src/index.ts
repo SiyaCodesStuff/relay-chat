@@ -72,6 +72,7 @@ export const messageNewSchema = z.object({
   id: messageIdSchema,
   channelId: channelIdSchema,
   userId: z.string().uuid(),
+  clientMessageId: z.string().min(1).max(128),
   body: z.string().min(1).max(4_000),
   createdAt: z.string().datetime({ offset: true }),
   editedAt: z.string().datetime({ offset: true }).nullable(),
@@ -121,6 +122,24 @@ export type SocketError = z.infer<typeof socketErrorSchema>;
 export type SocketActionAcknowledgement = z.infer<typeof socketActionAcknowledgementSchema>;
 export type MessageSendAcknowledgement = z.infer<typeof messageSendAcknowledgementSchema>;
 
+export const channelSyncSchema = z
+  .object({
+    channelId: channelIdSchema,
+    after: messageIdSchema.nullable(),
+    lastSeen: messageIdSchema.nullable().optional(),
+  })
+  .strict();
+export const channelSyncAcknowledgementSchema = z.discriminatedUnion("ok", [
+  z.object({
+    ok: z.literal(true),
+    messages: z.array(messageNewSchema).max(100),
+    hasMore: z.boolean(),
+  }),
+  z.object({ ok: z.literal(false), error: socketErrorSchema }),
+]);
+export type ChannelSync = z.infer<typeof channelSyncSchema>;
+export type ChannelSyncAcknowledgement = z.infer<typeof channelSyncAcknowledgementSchema>;
+
 export interface ServerToClientEvents {
   "message:new": (message: MessageNew) => void;
   "typing:start": (event: TypingUpdate) => void;
@@ -130,6 +149,10 @@ export interface ServerToClientEvents {
 }
 
 export interface ClientToServerEvents {
+  "channel:sync": (
+    payload: ChannelSync,
+    acknowledgement: (result: ChannelSyncAcknowledgement) => void,
+  ) => void;
   "message:send": (
     message: MessageSend,
     acknowledgement: (result: MessageSendAcknowledgement) => void,
@@ -141,3 +164,6 @@ export interface ClientToServerEvents {
   "typing:start": (event: TypingEvent) => void;
   "typing:stop": (event: TypingEvent) => void;
 }
+
+export { createReliableChatClient } from "./reliable-client.js";
+export type { ReliableSocket, SendState } from "./reliable-client.js";

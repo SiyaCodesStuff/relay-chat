@@ -1,7 +1,9 @@
 import type { Server as HttpServer } from "node:http";
-import { and, eq, inArray, isNull } from "drizzle-orm";
+import { and, asc, desc, eq, gt, inArray, isNull, sql } from "drizzle-orm";
+import { ulid } from "ulid";
 import {
   channelJoinEventSchema,
+  channelSyncSchema,
   type ClientToServerEvents,
   type MessageNew,
   messageSendSchema,
@@ -48,10 +50,27 @@ function channelRoom(channelId: string) {
   return `channel:${channelId}`;
 }
 
+function nextMessageId(previous: string | undefined) {
+  const candidate = ulid();
+  if (!previous || candidate > previous) return candidate;
+  const alphabet = "0123456789ABCDEFGHJKMNPQRSTVWXYZ";
+  const digits = previous.split("");
+  for (let index = digits.length - 1; index >= 0; index -= 1) {
+    const digit = alphabet.indexOf(digits[index] ?? "");
+    if (digit < 31) {
+      digits[index] = alphabet[digit + 1] ?? "0";
+      return digits.join("");
+    }
+    digits[index] = "0";
+  }
+  throw new Error("Message id space exhausted.");
+}
+
 function messageForClient(message: {
   id: string;
   channelId: string;
   userId: string;
+  clientMessageId: string;
   body: string;
   createdAt: Date;
   editedAt: Date | null;
@@ -60,6 +79,7 @@ function messageForClient(message: {
     id: message.id,
     channelId: message.channelId,
     userId: message.userId,
+    clientMessageId: message.clientMessageId,
     body: message.body,
     createdAt: message.createdAt.toISOString(),
     editedAt: message.editedAt?.toISOString() ?? null,
@@ -249,7 +269,46 @@ export function createSocketServer(options: SocketServerOptions) {
       return allowed;
     };
 
+    socket.on("channel:sync", async (payload, acknowledgement) => {
+      if (typeof acknowledgement !== "function") return;
+      try {
+        if (!(await isRateAllowed())) {
+          reject({ code: "RATE_LIMITED" }, acknowledgement);
+          return;
+        }
+        const parsed = channelSyncSchema.safeParse(payload);
+        if (!parsed.success) {
+          reject({ code: "INVALID_PAYLOAD" }, acknowledgement);
+          return;
+        }
+        if (!(await reauthorise(parsed.data.channelId))) {
+          reject({ code: "NOT_A_MEMBER" }, acknowledgement);
+          return;
+        }
+        await socket.join(channelRoom(parsed.data.channelId));
+        const conditions = [
+          eq(messages.channelId, parsed.data.channelId),
+          isNull(messages.deletedAt),
+        ];
+        if (parsed.data.after) conditions.push(gt(messages.id, parsed.data.after));
+        const page = await options.db
+          .select()
+          .from(messages)
+          .where(and(...conditions))
+          .orderBy(asc(messages.id))
+          .limit(101);
+        acknowledgement({
+          ok: true,
+          messages: page.slice(0, 100).map(messageForClient),
+          hasMore: page.length > 100,
+        });
+      } catch {
+        reject({ code: "INTERNAL_ERROR" }, acknowledgement);
+      }
+    });
+
     socket.on("channel:join", async (payload, acknowledgement) => {
+      if (typeof acknowledgement !== "function") return;
       if (!(await isRateAllowed())) {
         reject({ code: "RATE_LIMITED" }, acknowledgement);
         return;
@@ -268,6 +327,7 @@ export function createSocketServer(options: SocketServerOptions) {
     });
 
     socket.on("message:send", async (payload, acknowledgement) => {
+      if (typeof acknowledgement !== "function") return;
       if (!(await isRateAllowed())) {
         reject({ code: "RATE_LIMITED" }, acknowledgement);
         return;
@@ -283,23 +343,34 @@ export function createSocketServer(options: SocketServerOptions) {
       }
 
       try {
-        const [inserted] = await options.db
-          .insert(messages)
-          .values({
-            channelId: parsed.data.channelId,
-            userId: socket.data.userId,
-            body: parsed.data.body,
-            clientMessageId: parsed.data.clientMessageId,
-          })
-          .onConflictDoNothing({ target: [messages.userId, messages.clientMessageId] })
-          .returning({
-            id: messages.id,
-            channelId: messages.channelId,
-            userId: messages.userId,
-            body: messages.body,
-            createdAt: messages.createdAt,
-            editedAt: messages.editedAt,
-          });
+        // Allocate in commit order across instances, including within one millisecond.
+        const [inserted] = await options.db.transaction(async (transaction) => {
+          await transaction.execute(sql`SELECT pg_advisory_xact_lock(732194821)`);
+          const [latest] = await transaction
+            .select({ id: messages.id })
+            .from(messages)
+            .orderBy(desc(messages.id))
+            .limit(1);
+          return transaction
+            .insert(messages)
+            .values({
+              id: nextMessageId(latest?.id),
+              channelId: parsed.data.channelId,
+              userId: socket.data.userId,
+              body: parsed.data.body,
+              clientMessageId: parsed.data.clientMessageId,
+            })
+            .onConflictDoNothing({ target: [messages.userId, messages.clientMessageId] })
+            .returning({
+              id: messages.id,
+              channelId: messages.channelId,
+              userId: messages.userId,
+              clientMessageId: messages.clientMessageId,
+              body: messages.body,
+              createdAt: messages.createdAt,
+              editedAt: messages.editedAt,
+            });
+        });
         const [stored] = inserted
           ? [inserted]
           : await options.db
@@ -307,6 +378,7 @@ export function createSocketServer(options: SocketServerOptions) {
                 id: messages.id,
                 channelId: messages.channelId,
                 userId: messages.userId,
+                clientMessageId: messages.clientMessageId,
                 body: messages.body,
                 createdAt: messages.createdAt,
                 editedAt: messages.editedAt,
