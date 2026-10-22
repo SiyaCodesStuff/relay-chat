@@ -21,6 +21,7 @@ import {
 } from "./auth/session.js";
 import type { Database } from "./db/client.js";
 import { channelMembers, messages, users } from "./db/schema.js";
+import { createPresenceStore } from "./presence.js";
 
 const maxSocketPayloadBytes = 16 * 1024;
 const socketEventLimit = 30;
@@ -38,6 +39,9 @@ export type SocketServerOptions = {
   sessionTtlSeconds: number;
   sessionAbsoluteTtlSeconds: number;
   redisKeyPrefix?: string;
+  presenceTtlMs?: number;
+  heartbeatIntervalMs?: number;
+  typingTtlMs?: number;
 };
 
 function channelRoom(channelId: string) {
@@ -78,6 +82,12 @@ function createSocketRateLimiter() {
 }
 
 export function createSocketServer(options: SocketServerOptions) {
+  const presence = createPresenceStore(
+    options.redis,
+    options.redisKeyPrefix ?? "relay:",
+    options.presenceTtlMs ?? 30_000,
+  );
+  const activeConnections = new Map<string, string>();
   const allowedOrigins = new Set(options.allowedOrigins);
   const redisPrefix = options.redisKeyPrefix ? { keyPrefix: options.redisKeyPrefix } : {};
   const sessions = createSessionStore({
@@ -149,6 +159,29 @@ export function createSocketServer(options: SocketServerOptions) {
     return memberships.map((membership) => membership.channelId);
   }
 
+  async function announcePresence(userId: string, status: "online" | "offline") {
+    await emitPresence(await userChannelIds(userId), { userId, status });
+  }
+
+  let heartbeatRunning = false;
+  const heartbeat = setInterval(() => {
+    if (heartbeatRunning) return;
+    heartbeatRunning = true;
+    void (async () => {
+      for (const [connectionId, userId] of activeConnections) {
+        if ((await presence.touch(userId, connectionId)) === 1)
+          await announcePresence(userId, "online");
+      }
+      for (const userId of await presence.sweep()) await announcePresence(userId, "offline");
+    })()
+      .catch(() => console.error("Presence heartbeat failed."))
+      .finally(() => {
+        heartbeatRunning = false;
+      });
+  }, options.heartbeatIntervalMs ?? 10_000);
+  heartbeat.unref();
+  options.httpServer.once("close", () => clearInterval(heartbeat));
+
   io.use(async (socket, next) => {
     try {
       if (!allowedOrigins.has(socket.handshake.headers.origin ?? "")) {
@@ -176,10 +209,46 @@ export function createSocketServer(options: SocketServerOptions) {
     }
   });
 
-  io.on("connection", async (socket) => {
-    const initialChannels = await userChannelIds(socket.data.userId);
-    await socket.join(initialChannels.map(channelRoom));
-    await emitPresence(initialChannels, { userId: socket.data.userId, status: "online" });
+  io.on("connection", (socket) => {
+    const typing = new Map<string, { timer: ReturnType<typeof setTimeout>; lastEmitted: number }>();
+    const stopTyping = async (channelId: string) => {
+      const state = typing.get(channelId);
+      if (!state) return;
+      clearTimeout(state.timer);
+      typing.delete(channelId);
+      await pruneChannelRoom(channelId);
+      socket
+        .to(channelRoom(channelId))
+        .emit("typing:stop", { channelId, userId: socket.data.userId });
+    };
+    socket.once("disconnect", () => {
+      activeConnections.delete(socket.id);
+      for (const channelId of typing.keys())
+        void stopTyping(channelId).catch(() => console.error("Typing cleanup failed."));
+      void presence
+        .remove(socket.data.userId, socket.id)
+        .then(async (transition) => {
+          if (transition === -1) await announcePresence(socket.data.userId, "offline");
+        })
+        .catch(() => console.error("Presence cleanup failed."));
+    });
+    const ready = (async () => {
+      const initialChannels = await userChannelIds(socket.data.userId);
+      await socket.join(initialChannels.map(channelRoom));
+      if (!socket.connected) return;
+      activeConnections.set(socket.id, socket.data.userId);
+      if ((await presence.touch(socket.data.userId, socket.id)) === 1)
+        await announcePresence(socket.data.userId, "online");
+      if (!socket.connected) await presence.remove(socket.data.userId, socket.id);
+    })();
+    // Register handlers immediately; queue packets until asynchronous setup finishes.
+    socket.use((_packet, next) => {
+      void ready.then(
+        () => next(),
+        () => next(new Error("Socket setup failed.")),
+      );
+    });
+    void ready.catch(() => socket.disconnect(true));
 
     const isRateAllowed = createSocketRateLimiter();
     const reject = <T extends SocketActionAcknowledgement | undefined>(
@@ -291,18 +360,29 @@ export function createSocketServer(options: SocketServerOptions) {
         reject({ code: "NOT_A_MEMBER" });
         return;
       }
+      const channelId = parsed.data.channelId;
+      if (eventName === "typing:stop") {
+        await stopTyping(channelId);
+        return;
+      }
+      const previous = typing.get(channelId);
+      if (previous) clearTimeout(previous.timer);
+      const now = Date.now();
+      const shouldEmit = !previous || now - previous.lastEmitted >= 1_000;
+      const timer = setTimeout(() => {
+        void stopTyping(channelId).catch(() => console.error("Typing expiry failed."));
+      }, options.typingTtlMs ?? 3_000);
+      timer.unref();
+      typing.set(channelId, { timer, lastEmitted: shouldEmit ? now : previous.lastEmitted });
+      if (!shouldEmit) return;
       await pruneChannelRoom(parsed.data.channelId);
-      socket.to(channelRoom(parsed.data.channelId)).emit(eventName, parsed.data);
+      socket
+        .to(channelRoom(parsed.data.channelId))
+        .emit(eventName, { ...parsed.data, userId: socket.data.userId });
     };
 
     socket.on("typing:start", (payload) => void relayTyping("typing:start", payload));
     socket.on("typing:stop", (payload) => void relayTyping("typing:stop", payload));
-
-    socket.on("disconnect", () => {
-      void userChannelIds(socket.data.userId).then((channelIds) =>
-        emitPresence(channelIds, { userId: socket.data.userId, status: "offline" }),
-      );
-    });
   });
 
   return io;
