@@ -1,10 +1,10 @@
 import { createServer } from "node:http";
-import { createAdapter } from "@socket.io/redis-adapter";
 import { env } from "./env.js";
 import { createClient } from "redis";
 import { createApp } from "./app.js";
 import { createDatabase } from "./db/client.js";
 import { createSocketServer } from "./socket.js";
+import { attachRedisAdapter } from "./socket-adapter.js";
 
 const redis = createClient({ url: env.REDIS_URL });
 redis.on("error", () => {
@@ -33,21 +33,16 @@ const io = createSocketServer({
   sessionTtlSeconds: env.SESSION_TTL_SECONDS,
   sessionAbsoluteTtlSeconds: env.SESSION_ABSOLUTE_TTL_SECONDS,
 });
-const socketPublisher = redis.duplicate();
-const socketSubscriber = redis.duplicate();
-socketPublisher.on("error", () => console.error("Socket Redis connection error."));
-socketSubscriber.on("error", () => console.error("Socket Redis connection error."));
-await Promise.all([socketPublisher.connect(), socketSubscriber.connect()]);
-io.adapter(createAdapter(socketPublisher, socketSubscriber));
+const closeAdapter = await attachRedisAdapter(io, redis);
 
-const server = httpServer.listen(env.API_PORT, env.HOST, () => {
+httpServer.listen(env.API_PORT, env.HOST, () => {
   console.info(`API listening on ${env.HOST}:${env.API_PORT}`);
 });
 
 async function shutdown() {
-  server.close();
-  io.close();
-  await Promise.all([socketPublisher.quit(), socketSubscriber.quit(), redis.quit()]);
+  await new Promise<void>((resolve) => io.close(() => resolve()));
+  await closeAdapter();
+  await redis.quit();
   await pool.end();
 }
 

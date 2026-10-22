@@ -22,10 +22,10 @@ import {
 import type { Database } from "./db/client.js";
 import { channelMembers, messages, users } from "./db/schema.js";
 import { createPresenceStore } from "./presence.js";
+import { createRedisRateLimiter } from "./auth/rate-limit.js";
 
 const maxSocketPayloadBytes = 16 * 1024;
 const socketEventLimit = 30;
-const socketEventWindowMs = 10_000;
 
 type SocketData = {
   userId: string;
@@ -66,28 +66,12 @@ function messageForClient(message: {
   };
 }
 
-function createSocketRateLimiter() {
-  let windowStartedAt = Date.now();
-  let count = 0;
-
-  return () => {
-    const now = Date.now();
-    if (now - windowStartedAt >= socketEventWindowMs) {
-      windowStartedAt = now;
-      count = 0;
-    }
-    count += 1;
-    return count <= socketEventLimit;
-  };
-}
-
 export function createSocketServer(options: SocketServerOptions) {
   const presence = createPresenceStore(
     options.redis,
     options.redisKeyPrefix ?? "relay:",
     options.presenceTtlMs ?? 30_000,
   );
-  const activeConnections = new Map<string, string>();
   const allowedOrigins = new Set(options.allowedOrigins);
   const redisPrefix = options.redisKeyPrefix ? { keyPrefix: options.redisKeyPrefix } : {};
   const sessions = createSessionStore({
@@ -101,7 +85,8 @@ export function createSocketServer(options: SocketServerOptions) {
     ServerToClientEvents,
     Record<string, never>,
     SocketData
-  >(options.httpServer, { maxHttpBufferSize: maxSocketPayloadBytes });
+  >(options.httpServer, { maxHttpBufferSize: maxSocketPayloadBytes, transports: ["websocket"] });
+  const rateLimit = createRedisRateLimiter({ redis: options.redis, ...redisPrefix });
 
   async function isCurrentMember(userId: string, channelId: string) {
     const [membership] = await options.db
@@ -168,7 +153,9 @@ export function createSocketServer(options: SocketServerOptions) {
     if (heartbeatRunning) return;
     heartbeatRunning = true;
     void (async () => {
-      for (const [connectionId, userId] of activeConnections) {
+      for (const socket of io.sockets.sockets.values()) {
+        const connectionId = socket.id;
+        const userId = socket.data.userId;
         if ((await presence.touch(userId, connectionId)) === 1)
           await announcePresence(userId, "online");
       }
@@ -222,7 +209,6 @@ export function createSocketServer(options: SocketServerOptions) {
         .emit("typing:stop", { channelId, userId: socket.data.userId });
     };
     socket.once("disconnect", () => {
-      activeConnections.delete(socket.id);
       for (const channelId of typing.keys())
         void stopTyping(channelId).catch(() => console.error("Typing cleanup failed."));
       void presence
@@ -236,7 +222,6 @@ export function createSocketServer(options: SocketServerOptions) {
       const initialChannels = await userChannelIds(socket.data.userId);
       await socket.join(initialChannels.map(channelRoom));
       if (!socket.connected) return;
-      activeConnections.set(socket.id, socket.data.userId);
       if ((await presence.touch(socket.data.userId, socket.id)) === 1)
         await announcePresence(socket.data.userId, "online");
       if (!socket.connected) await presence.remove(socket.data.userId, socket.id);
@@ -250,7 +235,7 @@ export function createSocketServer(options: SocketServerOptions) {
     });
     void ready.catch(() => socket.disconnect(true));
 
-    const isRateAllowed = createSocketRateLimiter();
+    const isRateAllowed = () => rateLimit(socket.id, "socket", socketEventLimit, 10);
     const reject = <T extends SocketActionAcknowledgement | undefined>(
       error: SocketError,
       acknowledgement?: (result: T) => void,
@@ -265,7 +250,7 @@ export function createSocketServer(options: SocketServerOptions) {
     };
 
     socket.on("channel:join", async (payload, acknowledgement) => {
-      if (!isRateAllowed()) {
+      if (!(await isRateAllowed())) {
         reject({ code: "RATE_LIMITED" }, acknowledgement);
         return;
       }
@@ -283,7 +268,7 @@ export function createSocketServer(options: SocketServerOptions) {
     });
 
     socket.on("message:send", async (payload, acknowledgement) => {
-      if (!isRateAllowed()) {
+      if (!(await isRateAllowed())) {
         reject({ code: "RATE_LIMITED" }, acknowledgement);
         return;
       }
@@ -347,7 +332,7 @@ export function createSocketServer(options: SocketServerOptions) {
     });
 
     const relayTyping = async (eventName: "typing:start" | "typing:stop", payload: TypingEvent) => {
-      if (!isRateAllowed()) {
+      if (!(await isRateAllowed())) {
         reject({ code: "RATE_LIMITED" });
         return;
       }

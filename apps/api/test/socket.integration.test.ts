@@ -17,6 +17,7 @@ import { createDatabase, type Database } from "../src/db/client.js";
 import { channels, messages, users } from "../src/db/schema.js";
 import { createSocketServer } from "../src/socket.js";
 import { createPresenceStore } from "../src/presence.js";
+import { attachRedisAdapter } from "../src/socket-adapter.js";
 
 const origin = "http://localhost:5173";
 const csrfHeaders = { origin, "x-csrf-request": "1" };
@@ -40,8 +41,7 @@ function sessionCookie(response: Response) {
   return match[1];
 }
 
-async function startSocketServer() {
-  const redisKeyPrefix = `relay:test:socket:${randomUUID()}:`;
+async function startSocketServer(redisKeyPrefix = `relay:test:socket:${randomUUID()}:`) {
   redisPrefixes.push(redisKeyPrefix);
   const app = createApp({
     db,
@@ -63,6 +63,7 @@ async function startSocketServer() {
     sessionAbsoluteTtlSeconds: 60,
     redisKeyPrefix,
   });
+  const closeAdapter = await attachRedisAdapter(io, redis, `${redisKeyPrefix}socket.io`);
   await new Promise<void>((resolve, reject) => {
     httpServer.once("error", reject);
     httpServer.listen(0, "127.0.0.1", resolve);
@@ -77,8 +78,8 @@ async function startSocketServer() {
     redisKeyPrefix,
     url: `http://127.0.0.1:${address.port}`,
     close: async () => {
-      await new Promise<void>((resolve) => httpServer.close(() => resolve()));
-      io.close();
+      await new Promise<void>((resolve) => io.close(() => resolve()));
+      await closeAdapter();
     },
   };
 }
@@ -100,6 +101,7 @@ async function register(app: Awaited<ReturnType<typeof startSocketServer>>["app"
 
 function connect(url: string, cookie: string, connectionOrigin = origin) {
   const socket: ClientSocket = createSocketClient(url, {
+    reconnection: false,
     transports: ["websocket"],
     extraHeaders: { Cookie: cookie, Origin: connectionOrigin },
   });
@@ -157,6 +159,78 @@ afterAll(async () => {
 });
 
 describe("Socket.IO chat events", () => {
+  it("delivers across two instances and counts one user's tabs across both", async () => {
+    const prefix = `relay:test:cluster:${randomUUID()}:`;
+    const first = await startSocketServer(prefix);
+    const second = await startSocketServer(prefix);
+    const sockets: ClientSocket[] = [];
+    try {
+      expect(first.url).not.toBe(second.url);
+      const owner = await register(first.app);
+      const member = await register(second.app);
+      await request(second.app).get("/api/v1/auth/me").set("Cookie", owner.cookie).expect(200);
+      const created = await owner.agent
+        .post("/api/v1/channels")
+        .set(csrfHeaders)
+        .send({ name: `cluster-${randomUUID()}` })
+        .expect(201);
+      const channelId = created.body.channel.id as string;
+      ownedChannelIds.push(channelId);
+      await member.agent.post(`/api/v1/channels/${channelId}/join`).set(csrfHeaders).expect(204);
+      const observer = await connect(second.url, member.cookie);
+      sockets.push(observer);
+      const join = (socket: ClientSocket) =>
+        new Promise<void>((resolve, reject) => {
+          socket.emit("channel:join", { channelId }, (result) =>
+            result.ok ? resolve() : reject(new Error(result.error.code)),
+          );
+        });
+      await join(observer);
+      const online = new Promise((resolve) => observer.once("presence:update", resolve));
+      const ownerA = await connect(first.url, owner.cookie);
+      sockets.push(ownerA);
+      await join(ownerA);
+      expect(await online).toEqual({ userId: owner.userId, status: "online" });
+      const ownerB = await connect(second.url, owner.cookie);
+      sockets.push(ownerB);
+      await join(ownerB);
+      expect(await redis.zCard(`${prefix}presence:connections:${owner.userId}`)).toBe(2);
+
+      const received = new Promise<MessageNew>((resolve) => observer.once("message:new", resolve));
+      const result = await sendMessage(ownerA, {
+        channelId,
+        body: "Across instances",
+        clientMessageId: randomUUID(),
+      });
+      expect(result.ok).toBe(true);
+      if (!result.ok) throw new Error("Message send failed.");
+      expect(await received).toEqual(result.message);
+
+      // Observe server-side disconnect completion before issuing the next Redis barrier.
+      const serverSocket = first.io.sockets.sockets.get(ownerA.id ?? "");
+      if (!serverSocket) throw new Error("First instance socket missing.");
+      const disconnected = new Promise<void>((resolve) =>
+        serverSocket.once("disconnect", () => resolve()),
+      );
+      ownerA.disconnect();
+      await disconnected;
+      await join(ownerB);
+      expect(await redis.zCard(`${prefix}presence:connections:${owner.userId}`)).toBe(1);
+      expect(await redis.zScore(`${prefix}presence:users`, owner.userId)).not.toBeNull();
+      const offline = new Promise((resolve) => observer.once("presence:update", resolve));
+      ownerB.disconnect();
+      expect(await offline).toEqual({ userId: owner.userId, status: "offline" });
+      expect(await redis.zCard(`${prefix}presence:connections:${owner.userId}`)).toBe(0);
+      expect(await redis.zScore(`${prefix}presence:users`, owner.userId)).toBeNull();
+      const polling = await fetch(`${first.url}/socket.io/?EIO=4&transport=polling`);
+      expect(polling.status).toBe(400);
+    } finally {
+      for (const socket of sockets) socket.disconnect();
+      await first.close();
+      await second.close();
+    }
+  });
+
   it("counts two tabs and expires a crashed connection lease in Redis", async () => {
     const prefix = `relay:test:presence:${randomUUID()}:`;
     redisPrefixes.push(prefix);
