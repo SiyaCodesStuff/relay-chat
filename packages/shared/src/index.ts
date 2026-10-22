@@ -60,10 +60,82 @@ export type CreateChannelRequest = z.infer<typeof createChannelRequestSchema>;
 export type ListMessagesQuery = z.infer<typeof listMessagesQuerySchema>;
 export type MarkChannelReadRequest = z.infer<typeof markChannelReadRequestSchema>;
 
+export const messageSendSchema = z
+  .object({
+    channelId: channelIdSchema,
+    body: z.string().trim().min(1).max(4_000),
+    clientMessageId: z.string().trim().min(1).max(128),
+  })
+  .strict();
+
+export const messageNewSchema = z.object({
+  id: messageIdSchema,
+  channelId: channelIdSchema,
+  userId: z.string().uuid(),
+  body: z.string().min(1).max(4_000),
+  createdAt: z.string().datetime({ offset: true }),
+  editedAt: z.string().datetime({ offset: true }).nullable(),
+});
+
+export const channelJoinEventSchema = z
+  .object({
+    channelId: channelIdSchema,
+  })
+  .strict();
+
+export const typingEventSchema = channelJoinEventSchema;
+
+export const presenceUpdateSchema = z.object({
+  userId: z.string().uuid(),
+  status: z.enum(["online", "offline"]),
+});
+
+export const socketErrorSchema = z.object({
+  code: z.enum([
+    "INVALID_PAYLOAD",
+    "NOT_AUTHENTICATED",
+    "NOT_A_MEMBER",
+    "RATE_LIMITED",
+    "INTERNAL_ERROR",
+  ]),
+});
+
+export const socketActionAcknowledgementSchema = z.discriminatedUnion("ok", [
+  z.object({ ok: z.literal(true) }),
+  z.object({ ok: z.literal(false), error: socketErrorSchema }),
+]);
+
+export const messageSendAcknowledgementSchema = z.discriminatedUnion("ok", [
+  z.object({ ok: z.literal(true), message: messageNewSchema }),
+  z.object({ ok: z.literal(false), error: socketErrorSchema }),
+]);
+
+export type MessageSend = z.infer<typeof messageSendSchema>;
+export type MessageNew = z.infer<typeof messageNewSchema>;
+export type ChannelJoinEvent = z.infer<typeof channelJoinEventSchema>;
+export type TypingEvent = z.infer<typeof typingEventSchema>;
+export type PresenceUpdate = z.infer<typeof presenceUpdateSchema>;
+export type SocketError = z.infer<typeof socketErrorSchema>;
+export type SocketActionAcknowledgement = z.infer<typeof socketActionAcknowledgementSchema>;
+export type MessageSendAcknowledgement = z.infer<typeof messageSendAcknowledgementSchema>;
+
 export interface ServerToClientEvents {
-  "chat:message": (message: ChatMessage) => void;
+  "message:new": (message: MessageNew) => void;
+  "typing:start": (event: TypingEvent) => void;
+  "typing:stop": (event: TypingEvent) => void;
+  "presence:update": (presence: PresenceUpdate) => void;
+  error: (error: SocketError) => void;
 }
 
 export interface ClientToServerEvents {
-  "chat:send": (message: ChatMessage) => void;
+  "message:send": (
+    message: MessageSend,
+    acknowledgement: (result: MessageSendAcknowledgement) => void,
+  ) => void;
+  "channel:join": (
+    channel: ChannelJoinEvent,
+    acknowledgement: (result: SocketActionAcknowledgement) => void,
+  ) => void;
+  "typing:start": (event: TypingEvent) => void;
+  "typing:stop": (event: TypingEvent) => void;
 }
