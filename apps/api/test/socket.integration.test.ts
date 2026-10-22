@@ -16,6 +16,7 @@ import { createApp } from "../src/app.js";
 import { createDatabase, type Database } from "../src/db/client.js";
 import { channels, messages, users } from "../src/db/schema.js";
 import { createSocketServer } from "../src/socket.js";
+import { createPresenceStore } from "../src/presence.js";
 
 const origin = "http://localhost:5173";
 const csrfHeaders = { origin, "x-csrf-request": "1" };
@@ -53,6 +54,7 @@ async function startSocketServer() {
   });
   const httpServer = createServer(app);
   const io = createSocketServer({
+    typingTtlMs: 100,
     httpServer,
     db,
     redis,
@@ -72,6 +74,7 @@ async function startSocketServer() {
   return {
     app,
     io,
+    redisKeyPrefix,
     url: `http://127.0.0.1:${address.port}`,
     close: async () => {
       await new Promise<void>((resolve) => httpServer.close(() => resolve()));
@@ -154,10 +157,27 @@ afterAll(async () => {
 });
 
 describe("Socket.IO chat events", () => {
+  it("counts two tabs and expires a crashed connection lease in Redis", async () => {
+    const prefix = `relay:test:presence:${randomUUID()}:`;
+    redisPrefixes.push(prefix);
+    const presence = createPresenceStore(redis, prefix, 100);
+    const userId = randomUUID();
+    expect(await presence.touch(userId, "tab-one")).toBe(1);
+    expect(await presence.touch(userId, "tab-two")).toBe(0);
+    expect(await presence.remove(userId, "tab-one")).toBe(0);
+    expect(await presence.sweep()).toEqual([]);
+    // No disconnect cleanup or heartbeat: simulate a crashed instance.
+    await new Promise((resolve) => setTimeout(resolve, 150));
+    expect(await presence.sweep()).toEqual([userId]);
+    expect(await presence.sweep()).toEqual([]);
+    expect(await redis.exists(`${prefix}presence:connections:${userId}`)).toBe(0);
+  });
+
   it("authenticates two clients, persists once, and broadcasts a stored message", async () => {
     const server = await startSocketServer();
     let ownerSocket: ClientSocket | undefined;
     let memberSocket: ClientSocket | undefined;
+    let secondTab: ClientSocket | undefined;
     try {
       const owner = await register(server.app);
       const member = await register(server.app);
@@ -172,6 +192,23 @@ describe("Socket.IO chat events", () => {
 
       ownerSocket = await connect(server.url, owner.cookie);
       memberSocket = await connect(server.url, member.cookie);
+      // The join acknowledgement is a barrier for asynchronous connection setup.
+      await new Promise<void>((resolve) =>
+        memberSocket?.emit("channel:join", { channelId }, () => resolve()),
+      );
+      const typingStarted = new Promise((resolve) => memberSocket?.once("typing:start", resolve));
+      const typingStopped = new Promise((resolve) => memberSocket?.once("typing:stop", resolve));
+      ownerSocket.emit("typing:start", { channelId });
+      expect(await typingStarted).toEqual({ channelId, userId: owner.userId });
+      expect(await typingStopped).toEqual({ channelId, userId: owner.userId });
+      secondTab = await connect(server.url, owner.cookie);
+      await new Promise<void>((resolve) =>
+        secondTab?.emit("channel:join", { channelId }, () => resolve()),
+      );
+      expect(
+        await redis.zCard(`${server.redisKeyPrefix}presence:connections:${owner.userId}`),
+      ).toBe(2);
+      secondTab.disconnect();
       const received = new Promise<MessageNew>((resolve) =>
         memberSocket?.once("message:new", resolve),
       );
@@ -185,6 +222,12 @@ describe("Socket.IO chat events", () => {
       expect(first.ok).toBe(true);
       if (!first.ok) throw new Error("Expected successful message acknowledgement.");
       expect(await received).toEqual(first.message);
+      expect(
+        await redis.zCard(`${server.redisKeyPrefix}presence:connections:${owner.userId}`),
+      ).toBe(1);
+      expect(
+        await redis.zScore(`${server.redisKeyPrefix}presence:users`, owner.userId),
+      ).not.toBeNull();
 
       const duplicate = await sendMessage(ownerSocket, {
         channelId,
@@ -199,6 +242,7 @@ describe("Socket.IO chat events", () => {
       expect(Number(storedCount?.count)).toBe(1);
     } finally {
       ownerSocket?.disconnect();
+      secondTab?.disconnect();
       memberSocket?.disconnect();
       await server.close();
     }
@@ -240,9 +284,9 @@ describe("Socket.IO chat events", () => {
       if (!memberSocket) throw new Error("Member socket did not connect.");
       const memberSocketId = memberSocket.id;
       if (!memberSocketId) throw new Error("Member socket has no id.");
-      expect(
-        server.io.sockets.sockets.get(memberSocketId)?.rooms.has(`channel:${channelId}`),
-      ).toBe(false);
+      expect(server.io.sockets.sockets.get(memberSocketId)?.rooms.has(`channel:${channelId}`)).toBe(
+        false,
+      );
     } finally {
       ownerSocket?.disconnect();
       memberSocket?.disconnect();

@@ -84,6 +84,8 @@ export const channelJoinEventSchema = z
   .strict();
 
 export const typingEventSchema = channelJoinEventSchema;
+export const typingUpdateSchema = typingEventSchema.extend({ userId: z.string().uuid() });
+export type TypingUpdate = z.infer<typeof typingUpdateSchema>;
 
 export const presenceUpdateSchema = z.object({
   userId: z.string().uuid(),
@@ -121,8 +123,8 @@ export type MessageSendAcknowledgement = z.infer<typeof messageSendAcknowledgeme
 
 export interface ServerToClientEvents {
   "message:new": (message: MessageNew) => void;
-  "typing:start": (event: TypingEvent) => void;
-  "typing:stop": (event: TypingEvent) => void;
+  "typing:start": (event: TypingUpdate) => void;
+  "typing:stop": (event: TypingUpdate) => void;
   "presence:update": (presence: PresenceUpdate) => void;
   error: (error: SocketError) => void;
 }
