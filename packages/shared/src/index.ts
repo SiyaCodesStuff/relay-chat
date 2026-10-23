@@ -29,6 +29,16 @@ export const loginRequestSchema = z.object({
 export type RegisterRequest = z.infer<typeof registerRequestSchema>;
 export type LoginRequest = z.infer<typeof loginRequestSchema>;
 
+export const authUserSchema = z.object({
+  id: z.string().uuid(),
+  email: z.string().email(),
+  displayName: z.string(),
+  role: z.enum(["user", "admin"]),
+});
+export const authResponseSchema = z.object({ user: authUserSchema });
+export const apiErrorEnvelopeSchema = z.object({ error: z.string().min(1).max(100) });
+export type AuthUser = z.infer<typeof authUserSchema>;
+
 const channelIdSchema = z.string().uuid();
 const messageIdSchema = z.string().regex(/^[0-9A-HJKMNP-TV-Z]{26}$/i);
 
