@@ -12,11 +12,15 @@ Call `send({ channelId, body, clientMessageId })` with one generated ID per logi
 
 Connect to the Socket.IO server with the `relay_session` cookie and an `Origin` value listed in `ALLOWED_ORIGINS`. Connections without either are rejected. The server joins the socket to each channel the authenticated user currently belongs to.
 
+The web `createChatSocket(reconnection)` factory and `SocketProvider`'s `reconnection` prop accept `reconnectionDelay`, `reconnectionDelayMax`, and `randomizationFactor`. Omitted values use Socket.IO defaults. Tests inject 1 ms initial delay, 5 ms maximum delay, and zero jitter, then await reconnect and synchronization events. These transport settings are independent of the reliability module's `acknowledgementTimeoutMs`.
+
 ## Multiple API instances
 
 The server accepts WebSocket transport only. Clients must connect using `io(url, { transports: ["websocket"] })`. HTTP long-polling is disabled: polling sends multiple HTTP requests for one Engine.IO session, which would require sticky routing to the instance owning that session. A WebSocket uses one connection, so no sticky sessions are needed. Configure the reverse proxy to forward WebSocket upgrades.
 
-Every instance attaches the Socket.IO Redis adapter with dedicated publisher and subscriber connections before listening. Redis Pub/Sub forwards channel events and room operations between instances. All instances must use the same Redis, PostgreSQL, adapter channel prefix, and origin/session configuration. PostgreSQL owns messages, idempotency, membership and ban state; Redis owns sessions, rate counters and presence leases. No instance-local cache is authoritative for those decisions. Redis Pub/Sub is live delivery, not a durable queue: disconnected clients recover history through the REST cursor API.
+Every instance attaches the Socket.IO Redis adapter with dedicated publisher and subscriber connections before listening. Redis Pub/Sub forwards channel events and room operations between instances. All instances must use the same Redis, PostgreSQL, adapter channel prefix, and origin/session configuration. PostgreSQL owns messages, idempotency, membership and ban state; Redis owns sessions, rate counters and presence leases. No instance-local cache is authoritative for those decisions. Redis Pub/Sub is live delivery, not a durable queue: the reliable client recovers disconnected history through paged `channel:sync` acknowledgements.
+
+Await `io.close()` (or its callback) before quitting the adapter Redis clients, the shared Redis client, or the database pool. The chat server drains its pending setup, heartbeat, typing cleanup, and disconnect tasks before completing socket shutdown.
 
 Only live connection objects and transient typing timers remain local to their owning WebSocket. Typing is deliberately never persisted; clients expire indicators locally after a server loss. Presence survives instance loss through Redis lease expiry and reconciliation by surviving instances.
 
