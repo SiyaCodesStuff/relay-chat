@@ -1,0 +1,776 @@
+{
+  "date": "2026-10-24",
+  "node": "24.22.0",
+  "cpus": 8,
+  "loadWorkers": 6,
+  "testTimeoutMs": 5000,
+  "hookTimeoutMs": 10000,
+  "baselineCommit": "5dc5be9",
+  "before": {
+    "artifacts": "/tmp/relay-socket-investigation/before",
+    "groups": {
+      "idle": {
+        "runs": 30,
+        "targetPassed": 30,
+        "wholeFilePassed": 30
+      },
+      "load": {
+        "runs": 15,
+        "targetPassed": 14,
+        "wholeFilePassed": 8
+      }
+    },
+    "runs": [
+      {
+        "mode": "idle",
+        "run": 1,
+        "exit": 0,
+        "target": "passed",
+        "durationMs": 1825.054,
+        "failedTests": []
+      },
+      {
+        "mode": "idle",
+        "run": 2,
+        "exit": 0,
+        "target": "passed",
+        "durationMs": 1129.233,
+        "failedTests": []
+      },
+      {
+        "mode": "idle",
+        "run": 3,
+        "exit": 0,
+        "target": "passed",
+        "durationMs": 510.957,
+        "failedTests": []
+      },
+      {
+        "mode": "idle",
+        "run": 4,
+        "exit": 0,
+        "target": "passed",
+        "durationMs": 512.566,
+        "failedTests": []
+      },
+      {
+        "mode": "idle",
+        "run": 5,
+        "exit": 0,
+        "target": "passed",
+        "durationMs": 562.101,
+        "failedTests": []
+      },
+      {
+        "mode": "idle",
+        "run": 6,
+        "exit": 0,
+        "target": "passed",
+        "durationMs": 690.895,
+        "failedTests": []
+      },
+      {
+        "mode": "idle",
+        "run": 7,
+        "exit": 0,
+        "target": "passed",
+        "durationMs": 1032.857,
+        "failedTests": []
+      },
+      {
+        "mode": "idle",
+        "run": 8,
+        "exit": 0,
+        "target": "passed",
+        "durationMs": 825.76,
+        "failedTests": []
+      },
+      {
+        "mode": "idle",
+        "run": 9,
+        "exit": 0,
+        "target": "passed",
+        "durationMs": 643.693,
+        "failedTests": []
+      },
+      {
+        "mode": "idle",
+        "run": 10,
+        "exit": 0,
+        "target": "passed",
+        "durationMs": 725.889,
+        "failedTests": []
+      },
+      {
+        "mode": "idle",
+        "run": 11,
+        "exit": 0,
+        "target": "passed",
+        "durationMs": 1170.54,
+        "failedTests": []
+      },
+      {
+        "mode": "idle",
+        "run": 12,
+        "exit": 0,
+        "target": "passed",
+        "durationMs": 1141.219,
+        "failedTests": []
+      },
+      {
+        "mode": "idle",
+        "run": 13,
+        "exit": 0,
+        "target": "passed",
+        "durationMs": 870.682,
+        "failedTests": []
+      },
+      {
+        "mode": "idle",
+        "run": 14,
+        "exit": 0,
+        "target": "passed",
+        "durationMs": 1087.168,
+        "failedTests": []
+      },
+      {
+        "mode": "idle",
+        "run": 15,
+        "exit": 0,
+        "target": "passed",
+        "durationMs": 818.721,
+        "failedTests": []
+      },
+      {
+        "mode": "idle",
+        "run": 16,
+        "exit": 0,
+        "target": "passed",
+        "durationMs": 750.892,
+        "failedTests": []
+      },
+      {
+        "mode": "idle",
+        "run": 17,
+        "exit": 0,
+        "target": "passed",
+        "durationMs": 737.984,
+        "failedTests": []
+      },
+      {
+        "mode": "idle",
+        "run": 18,
+        "exit": 0,
+        "target": "passed",
+        "durationMs": 1210.861,
+        "failedTests": []
+      },
+      {
+        "mode": "idle",
+        "run": 19,
+        "exit": 0,
+        "target": "passed",
+        "durationMs": 647.147,
+        "failedTests": []
+      },
+      {
+        "mode": "idle",
+        "run": 20,
+        "exit": 0,
+        "target": "passed",
+        "durationMs": 587.176,
+        "failedTests": []
+      },
+      {
+        "mode": "idle",
+        "run": 21,
+        "exit": 0,
+        "target": "passed",
+        "durationMs": 845.446,
+        "failedTests": []
+      },
+      {
+        "mode": "idle",
+        "run": 22,
+        "exit": 0,
+        "target": "passed",
+        "durationMs": 666.14,
+        "failedTests": []
+      },
+      {
+        "mode": "idle",
+        "run": 23,
+        "exit": 0,
+        "target": "passed",
+        "durationMs": 1007.841,
+        "failedTests": []
+      },
+      {
+        "mode": "idle",
+        "run": 24,
+        "exit": 0,
+        "target": "passed",
+        "durationMs": 913.058,
+        "failedTests": []
+      },
+      {
+        "mode": "idle",
+        "run": 25,
+        "exit": 0,
+        "target": "passed",
+        "durationMs": 639.696,
+        "failedTests": []
+      },
+      {
+        "mode": "idle",
+        "run": 26,
+        "exit": 0,
+        "target": "passed",
+        "durationMs": 709.063,
+        "failedTests": []
+      },
+      {
+        "mode": "idle",
+        "run": 27,
+        "exit": 0,
+        "target": "passed",
+        "durationMs": 584.254,
+        "failedTests": []
+      },
+      {
+        "mode": "idle",
+        "run": 28,
+        "exit": 0,
+        "target": "passed",
+        "durationMs": 660.943,
+        "failedTests": []
+      },
+      {
+        "mode": "idle",
+        "run": 29,
+        "exit": 0,
+        "target": "passed",
+        "durationMs": 939.993,
+        "failedTests": []
+      },
+      {
+        "mode": "idle",
+        "run": 30,
+        "exit": 0,
+        "target": "passed",
+        "durationMs": 533.512,
+        "failedTests": []
+      },
+      {
+        "mode": "load",
+        "run": 1,
+        "exit": 0,
+        "target": "passed",
+        "durationMs": 2966.124,
+        "failedTests": []
+      },
+      {
+        "mode": "load",
+        "run": 2,
+        "exit": 0,
+        "target": "passed",
+        "durationMs": 2715.675,
+        "failedTests": []
+      },
+      {
+        "mode": "load",
+        "run": 3,
+        "exit": 1,
+        "target": "passed",
+        "durationMs": 4683.832,
+        "failedTests": ["delivers across two instances and counts one user's tabs across both"]
+      },
+      {
+        "mode": "load",
+        "run": 4,
+        "exit": 1,
+        "target": "failed",
+        "durationMs": 5076.909,
+        "failedTests": ["catches up after a disconnect without missing or duplicating messages"]
+      },
+      {
+        "mode": "load",
+        "run": 5,
+        "exit": 0,
+        "target": "passed",
+        "durationMs": 3578.862,
+        "failedTests": []
+      },
+      {
+        "mode": "load",
+        "run": 6,
+        "exit": 0,
+        "target": "passed",
+        "durationMs": 2416.296,
+        "failedTests": []
+      },
+      {
+        "mode": "load",
+        "run": 7,
+        "exit": 1,
+        "target": "passed",
+        "durationMs": 2686.432,
+        "failedTests": []
+      },
+      {
+        "mode": "load",
+        "run": 8,
+        "exit": 0,
+        "target": "passed",
+        "durationMs": 4302.056,
+        "failedTests": []
+      },
+      {
+        "mode": "load",
+        "run": 9,
+        "exit": 1,
+        "target": "passed",
+        "durationMs": 3472.729,
+        "failedTests": []
+      },
+      {
+        "mode": "load",
+        "run": 10,
+        "exit": 0,
+        "target": "passed",
+        "durationMs": 1694.923,
+        "failedTests": []
+      },
+      {
+        "mode": "load",
+        "run": 11,
+        "exit": 0,
+        "target": "passed",
+        "durationMs": 1871.483,
+        "failedTests": []
+      },
+      {
+        "mode": "load",
+        "run": 12,
+        "exit": 0,
+        "target": "passed",
+        "durationMs": 1380.65,
+        "failedTests": []
+      },
+      {
+        "mode": "load",
+        "run": 13,
+        "exit": 1,
+        "target": "passed",
+        "durationMs": 2739.847,
+        "failedTests": []
+      },
+      {
+        "mode": "load",
+        "run": 14,
+        "exit": 1,
+        "target": "passed",
+        "durationMs": 3353.324,
+        "failedTests": []
+      },
+      {
+        "mode": "load",
+        "run": 15,
+        "exit": 1,
+        "target": "passed",
+        "durationMs": 3024.216,
+        "failedTests": [
+          "delivers across two instances and counts one user's tabs across both",
+          "counts two tabs and expires a crashed connection lease in Redis",
+          "authenticates two clients, persists once, and broadcasts a stored message",
+          "rejects an invalid origin and removes a departed member before the next broadcast"
+        ]
+      }
+    ]
+  },
+  "after": {
+    "artifacts": "/tmp/relay-socket-verified-97bOA1",
+    "groups": {
+      "idle": {
+        "runs": 30,
+        "targetPassed": 30,
+        "wholeFilePassed": 30
+      },
+      "load": {
+        "runs": 15,
+        "targetPassed": 15,
+        "wholeFilePassed": 15
+      }
+    },
+    "runs": [
+      {
+        "mode": "idle",
+        "run": 1,
+        "exit": 0,
+        "target": "passed",
+        "durationMs": 674.899,
+        "failedTests": []
+      },
+      {
+        "mode": "idle",
+        "run": 2,
+        "exit": 0,
+        "target": "passed",
+        "durationMs": 526.011,
+        "failedTests": []
+      },
+      {
+        "mode": "idle",
+        "run": 3,
+        "exit": 0,
+        "target": "passed",
+        "durationMs": 573.479,
+        "failedTests": []
+      },
+      {
+        "mode": "idle",
+        "run": 4,
+        "exit": 0,
+        "target": "passed",
+        "durationMs": 481.772,
+        "failedTests": []
+      },
+      {
+        "mode": "idle",
+        "run": 5,
+        "exit": 0,
+        "target": "passed",
+        "durationMs": 677.756,
+        "failedTests": []
+      },
+      {
+        "mode": "idle",
+        "run": 6,
+        "exit": 0,
+        "target": "passed",
+        "durationMs": 566.948,
+        "failedTests": []
+      },
+      {
+        "mode": "idle",
+        "run": 7,
+        "exit": 0,
+        "target": "passed",
+        "durationMs": 507.373,
+        "failedTests": []
+      },
+      {
+        "mode": "idle",
+        "run": 8,
+        "exit": 0,
+        "target": "passed",
+        "durationMs": 532.959,
+        "failedTests": []
+      },
+      {
+        "mode": "idle",
+        "run": 9,
+        "exit": 0,
+        "target": "passed",
+        "durationMs": 641.948,
+        "failedTests": []
+      },
+      {
+        "mode": "idle",
+        "run": 10,
+        "exit": 0,
+        "target": "passed",
+        "durationMs": 552.635,
+        "failedTests": []
+      },
+      {
+        "mode": "idle",
+        "run": 11,
+        "exit": 0,
+        "target": "passed",
+        "durationMs": 565.654,
+        "failedTests": []
+      },
+      {
+        "mode": "idle",
+        "run": 12,
+        "exit": 0,
+        "target": "passed",
+        "durationMs": 584.643,
+        "failedTests": []
+      },
+      {
+        "mode": "idle",
+        "run": 13,
+        "exit": 0,
+        "target": "passed",
+        "durationMs": 538.898,
+        "failedTests": []
+      },
+      {
+        "mode": "idle",
+        "run": 14,
+        "exit": 0,
+        "target": "passed",
+        "durationMs": 752.966,
+        "failedTests": []
+      },
+      {
+        "mode": "idle",
+        "run": 15,
+        "exit": 0,
+        "target": "passed",
+        "durationMs": 633.661,
+        "failedTests": []
+      },
+      {
+        "mode": "idle",
+        "run": 16,
+        "exit": 0,
+        "target": "passed",
+        "durationMs": 534.749,
+        "failedTests": []
+      },
+      {
+        "mode": "idle",
+        "run": 17,
+        "exit": 0,
+        "target": "passed",
+        "durationMs": 663.719,
+        "failedTests": []
+      },
+      {
+        "mode": "idle",
+        "run": 18,
+        "exit": 0,
+        "target": "passed",
+        "durationMs": 454.774,
+        "failedTests": []
+      },
+      {
+        "mode": "idle",
+        "run": 19,
+        "exit": 0,
+        "target": "passed",
+        "durationMs": 556.86,
+        "failedTests": []
+      },
+      {
+        "mode": "idle",
+        "run": 20,
+        "exit": 0,
+        "target": "passed",
+        "durationMs": 514.908,
+        "failedTests": []
+      },
+      {
+        "mode": "idle",
+        "run": 21,
+        "exit": 0,
+        "target": "passed",
+        "durationMs": 522.16,
+        "failedTests": []
+      },
+      {
+        "mode": "idle",
+        "run": 22,
+        "exit": 0,
+        "target": "passed",
+        "durationMs": 481.225,
+        "failedTests": []
+      },
+      {
+        "mode": "idle",
+        "run": 23,
+        "exit": 0,
+        "target": "passed",
+        "durationMs": 991.826,
+        "failedTests": []
+      },
+      {
+        "mode": "idle",
+        "run": 24,
+        "exit": 0,
+        "target": "passed",
+        "durationMs": 534.088,
+        "failedTests": []
+      },
+      {
+        "mode": "idle",
+        "run": 25,
+        "exit": 0,
+        "target": "passed",
+        "durationMs": 582.31,
+        "failedTests": []
+      },
+      {
+        "mode": "idle",
+        "run": 26,
+        "exit": 0,
+        "target": "passed",
+        "durationMs": 484.771,
+        "failedTests": []
+      },
+      {
+        "mode": "idle",
+        "run": 27,
+        "exit": 0,
+        "target": "passed",
+        "durationMs": 689.847,
+        "failedTests": []
+      },
+      {
+        "mode": "idle",
+        "run": 28,
+        "exit": 0,
+        "target": "passed",
+        "durationMs": 626.059,
+        "failedTests": []
+      },
+      {
+        "mode": "idle",
+        "run": 29,
+        "exit": 0,
+        "target": "passed",
+        "durationMs": 555.765,
+        "failedTests": []
+      },
+      {
+        "mode": "idle",
+        "run": 30,
+        "exit": 0,
+        "target": "passed",
+        "durationMs": 507.977,
+        "failedTests": []
+      },
+      {
+        "mode": "load",
+        "run": 1,
+        "exit": 0,
+        "target": "passed",
+        "durationMs": 3606.804,
+        "failedTests": []
+      },
+      {
+        "mode": "load",
+        "run": 2,
+        "exit": 0,
+        "target": "passed",
+        "durationMs": 2903.592,
+        "failedTests": []
+      },
+      {
+        "mode": "load",
+        "run": 3,
+        "exit": 0,
+        "target": "passed",
+        "durationMs": 1758.517,
+        "failedTests": []
+      },
+      {
+        "mode": "load",
+        "run": 4,
+        "exit": 0,
+        "target": "passed",
+        "durationMs": 1976.764,
+        "failedTests": []
+      },
+      {
+        "mode": "load",
+        "run": 5,
+        "exit": 0,
+        "target": "passed",
+        "durationMs": 1830.658,
+        "failedTests": []
+      },
+      {
+        "mode": "load",
+        "run": 6,
+        "exit": 0,
+        "target": "passed",
+        "durationMs": 1779.779,
+        "failedTests": []
+      },
+      {
+        "mode": "load",
+        "run": 7,
+        "exit": 0,
+        "target": "passed",
+        "durationMs": 2486.075,
+        "failedTests": []
+      },
+      {
+        "mode": "load",
+        "run": 8,
+        "exit": 0,
+        "target": "passed",
+        "durationMs": 1992.367,
+        "failedTests": []
+      },
+      {
+        "mode": "load",
+        "run": 9,
+        "exit": 0,
+        "target": "passed",
+        "durationMs": 1631.24,
+        "failedTests": []
+      },
+      {
+        "mode": "load",
+        "run": 10,
+        "exit": 0,
+        "target": "passed",
+        "durationMs": 2002.392,
+        "failedTests": []
+      },
+      {
+        "mode": "load",
+        "run": 11,
+        "exit": 0,
+        "target": "passed",
+        "durationMs": 2120.112,
+        "failedTests": []
+      },
+      {
+        "mode": "load",
+        "run": 12,
+        "exit": 0,
+        "target": "passed",
+        "durationMs": 2974.0,
+        "failedTests": []
+      },
+      {
+        "mode": "load",
+        "run": 13,
+        "exit": 0,
+        "target": "passed",
+        "durationMs": 3026.345,
+        "failedTests": []
+      },
+      {
+        "mode": "load",
+        "run": 14,
+        "exit": 0,
+        "target": "passed",
+        "durationMs": 2079.803,
+        "failedTests": []
+      },
+      {
+        "mode": "load",
+        "run": 15,
+        "exit": 0,
+        "target": "passed",
+        "durationMs": 1742.697,
+        "failedTests": []
+      }
+    ]
+  },
+  "verifiedSourceSha256": {
+    "apps/api/src/socket.ts": "903d8b8d1caeef982cf8ecd131a185e0c204ecd9fc992b8a74b7321cad2f9fc0",
+    "apps/api/test/socket.integration.test.ts": "25bc434a1053461aff8344749391e38401fdb7f3b30dcba910ddb5f7a500d272",
+    "apps/web/src/chat/socket.ts": "bf9e104d55f21376f54a9c1bcbe81489067b1df9f1058a9a6a26bb18ab8045a2",
+    "apps/web/src/chat/SocketProvider.tsx": "6d6a82e17029512a251c9c25249a1ec3b942285a6959a956b5b325b410a870f4",
+    "apps/web/test/socket.test.ts": "0309e8492b8efc65ac2c0ee750689261bd58cdec14450d749a51a165cd1647c5",
+    "scripts/socket-stability.mjs": "c08b274874fb1a2b849ffd89caf3352146a281bee9d85a83307659d5b67b20cf"
+  }
+}
