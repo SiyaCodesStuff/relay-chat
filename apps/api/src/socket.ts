@@ -107,6 +107,15 @@ export function createSocketServer(options: SocketServerOptions) {
     SocketData
   >(options.httpServer, { maxHttpBufferSize: maxSocketPayloadBytes, transports: ["websocket"] });
   const rateLimit = createRedisRateLimiter({ redis: options.redis, ...redisPrefix });
+  const backgroundTasks = new Set<Promise<unknown>>();
+  function track<T>(task: Promise<T>) {
+    backgroundTasks.add(task);
+    void task.then(
+      () => backgroundTasks.delete(task),
+      () => backgroundTasks.delete(task),
+    );
+    return task;
+  }
 
   async function isCurrentMember(userId: string, channelId: string) {
     const [membership] = await options.db
@@ -172,22 +181,37 @@ export function createSocketServer(options: SocketServerOptions) {
   const heartbeat = setInterval(() => {
     if (heartbeatRunning) return;
     heartbeatRunning = true;
-    void (async () => {
-      for (const socket of io.sockets.sockets.values()) {
-        const connectionId = socket.id;
-        const userId = socket.data.userId;
-        if ((await presence.touch(userId, connectionId)) === 1)
-          await announcePresence(userId, "online");
-      }
-      for (const userId of await presence.sweep()) await announcePresence(userId, "offline");
-    })()
-      .catch(() => console.error("Presence heartbeat failed."))
-      .finally(() => {
-        heartbeatRunning = false;
-      });
+    void track(
+      (async () => {
+        for (const socket of io.sockets.sockets.values()) {
+          const connectionId = socket.id;
+          const userId = socket.data.userId;
+          if ((await presence.touch(userId, connectionId)) === 1)
+            await announcePresence(userId, "online");
+        }
+        for (const userId of await presence.sweep()) await announcePresence(userId, "offline");
+      })()
+        .catch(() => console.error("Presence heartbeat failed."))
+        .finally(() => {
+          heartbeatRunning = false;
+        }),
+    );
   }, options.heartbeatIntervalMs ?? 10_000);
   heartbeat.unref();
   options.httpServer.once("close", () => clearInterval(heartbeat));
+
+  // Socket.IO closes transports synchronously, but our disconnect handlers do Redis/DB work.
+  // Keep the adapter's Redis clients alive until that work (including setup) has settled.
+  const close = io.close.bind(io);
+  io.close = async (callback) => {
+    clearInterval(heartbeat);
+    let closeError: Error | undefined;
+    await close((error) => {
+      closeError = error;
+    });
+    while (backgroundTasks.size > 0) await Promise.allSettled([...backgroundTasks]);
+    callback?.(closeError);
+  };
 
   io.use(async (socket, next) => {
     try {
@@ -230,22 +254,26 @@ export function createSocketServer(options: SocketServerOptions) {
     };
     socket.once("disconnect", () => {
       for (const channelId of typing.keys())
-        void stopTyping(channelId).catch(() => console.error("Typing cleanup failed."));
-      void presence
-        .remove(socket.data.userId, socket.id)
-        .then(async (transition) => {
-          if (transition === -1) await announcePresence(socket.data.userId, "offline");
-        })
-        .catch(() => console.error("Presence cleanup failed."));
+        void track(stopTyping(channelId).catch(() => console.error("Typing cleanup failed.")));
+      void track(
+        presence
+          .remove(socket.data.userId, socket.id)
+          .then(async (transition) => {
+            if (transition === -1) await announcePresence(socket.data.userId, "offline");
+          })
+          .catch(() => console.error("Presence cleanup failed.")),
+      );
     });
-    const ready = (async () => {
-      const initialChannels = await userChannelIds(socket.data.userId);
-      await socket.join(initialChannels.map(channelRoom));
-      if (!socket.connected) return;
-      if ((await presence.touch(socket.data.userId, socket.id)) === 1)
-        await announcePresence(socket.data.userId, "online");
-      if (!socket.connected) await presence.remove(socket.data.userId, socket.id);
-    })();
+    const ready = track(
+      (async () => {
+        const initialChannels = await userChannelIds(socket.data.userId);
+        await socket.join(initialChannels.map(channelRoom));
+        if (!socket.connected) return;
+        if ((await presence.touch(socket.data.userId, socket.id)) === 1)
+          await announcePresence(socket.data.userId, "online");
+        if (!socket.connected) await presence.remove(socket.data.userId, socket.id);
+      })(),
+    );
     // Register handlers immediately; queue packets until asynchronous setup finishes.
     socket.use((_packet, next) => {
       void ready.then(
@@ -285,6 +313,8 @@ export function createSocketServer(options: SocketServerOptions) {
           reject({ code: "NOT_A_MEMBER" }, acknowledgement);
           return;
         }
+        // Join before taking the history snapshot: overlap is deduped by the client;
+        // fetching first could lose a message committed between the query and the join.
         await socket.join(channelRoom(parsed.data.channelId));
         const conditions = [
           eq(messages.channelId, parsed.data.channelId),
@@ -427,7 +457,7 @@ export function createSocketServer(options: SocketServerOptions) {
       const now = Date.now();
       const shouldEmit = !previous || now - previous.lastEmitted >= 1_000;
       const timer = setTimeout(() => {
-        void stopTyping(channelId).catch(() => console.error("Typing expiry failed."));
+        void track(stopTyping(channelId).catch(() => console.error("Typing expiry failed.")));
       }, options.typingTtlMs ?? 3_000);
       timer.unref();
       typing.set(channelId, { timer, lastEmitted: shouldEmit ? now : previous.lastEmitted });

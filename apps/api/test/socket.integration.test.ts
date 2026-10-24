@@ -1,12 +1,13 @@
 import { createServer } from "node:http";
 import { randomUUID } from "node:crypto";
-import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { count, eq, inArray } from "drizzle-orm";
 import { migrate } from "drizzle-orm/node-postgres/migrator";
 import { createClient } from "redis";
 import request, { type Response } from "supertest";
-import { io as createSocketClient, type Socket } from "socket.io-client";
+import { io as createSocketClient, type Socket, type ManagerOptions } from "socket.io-client";
 import type {
+  ChannelSyncAcknowledgement,
   ClientToServerEvents,
   MessageNew,
   MessageSendAcknowledgement,
@@ -31,6 +32,51 @@ let closeDatabase: () => Promise<void>;
 let redis: ReturnType<typeof createClient>;
 
 type ClientSocket = Socket<ServerToClientEvents, ClientToServerEvents>;
+
+const testReconnection = {
+  reconnectionDelay: 1,
+  reconnectionDelayMax: 5,
+  randomizationFactor: 0,
+};
+const realSetTimeout = setTimeout;
+const realClearTimeout = clearTimeout;
+
+function waitFor<T = void>(
+  label: string,
+  subscribe: (resolve: (value: T) => void, reject: (error: Error) => void) => void | (() => void),
+): Promise<T> {
+  return new Promise<T>((resolve, reject) => {
+    let cleanup: () => void = () => {};
+    const timer = realSetTimeout(() => {
+      cleanup?.();
+      reject(new Error(`Timed out waiting for ${label}`));
+    }, 2_000);
+    const finish = (action: () => void) => {
+      realClearTimeout(timer);
+      cleanup?.();
+      action();
+    };
+    cleanup =
+      subscribe(
+        (value) => finish(() => resolve(value)),
+        (error) => finish(() => reject(error)),
+      ) ?? (() => {});
+  });
+}
+
+function gate<T = void>() {
+  let resolve!: (value: T) => void;
+  const promise = new Promise<T>((done) => {
+    resolve = done;
+  });
+  return { promise, resolve };
+}
+
+function waitForGate<T>(label: string, barrier: ReturnType<typeof gate<T>>) {
+  return waitFor<T>(label, (resolve, reject) => {
+    void barrier.promise.then(resolve, reject);
+  });
+}
 
 function sessionCookie(response: Response) {
   const setCookie = response.get("set-cookie");
@@ -65,7 +111,7 @@ async function startSocketServer(redisKeyPrefix = `relay:test:socket:${randomUUI
     redisKeyPrefix,
   });
   const closeAdapter = await attachRedisAdapter(io, redis, `${redisKeyPrefix}socket.io`);
-  await new Promise<void>((resolve, reject) => {
+  await waitFor("test HTTP server listening", (resolve, reject) => {
     httpServer.once("error", reject);
     httpServer.listen(0, "127.0.0.1", resolve);
   });
@@ -79,7 +125,7 @@ async function startSocketServer(redisKeyPrefix = `relay:test:socket:${randomUUI
     redisKeyPrefix,
     url: `http://127.0.0.1:${address.port}`,
     close: async () => {
-      await new Promise<void>((resolve) => io.close(() => resolve()));
+      await io.close();
       await closeAdapter();
     },
   };
@@ -100,15 +146,30 @@ async function register(app: Awaited<ReturnType<typeof startSocketServer>>["app"
   return { agent, cookie: sessionCookie(response), userId: response.body.user.id as string };
 }
 
-function connect(url: string, cookie: string, connectionOrigin = origin) {
+function connect(
+  url: string,
+  cookie: string,
+  connectionOrigin = origin,
+  reconnection: Partial<ManagerOptions> = {},
+) {
   const socket: ClientSocket = createSocketClient(url, {
     reconnection: false,
+    ...reconnection,
     transports: ["websocket"],
     extraHeaders: { Cookie: cookie, Origin: connectionOrigin },
   });
-  return new Promise<ClientSocket>((resolve, reject) => {
-    socket.once("connect", () => resolve(socket));
-    socket.once("connect_error", reject);
+  return waitFor<ClientSocket>("socket connect (or connect_error)", (resolve, reject) => {
+    const connected = () => resolve(socket);
+    const failed = (error: Error) => {
+      socket.disconnect();
+      reject(error);
+    };
+    socket.once("connect", connected);
+    socket.once("connect_error", failed);
+    return () => {
+      socket.off("connect", connected);
+      socket.off("connect_error", failed);
+    };
   });
 }
 
@@ -120,7 +181,7 @@ function sendMessage(
     clientMessageId: string;
   },
 ) {
-  return new Promise<MessageSendAcknowledgement>((resolve) => {
+  return waitFor<MessageSendAcknowledgement>("message:send acknowledgement", (resolve) => {
     socket.emit("message:send", payload, resolve);
   });
 }
@@ -160,13 +221,28 @@ afterAll(async () => {
 });
 
 describe("Socket.IO chat events", () => {
+  let fixtureServer: Awaited<ReturnType<typeof startSocketServer>>;
+  let fixtureOwner: Awaited<ReturnType<typeof register>>;
+  let fixtureMember: Awaited<ReturnType<typeof register>>;
+
+  // Real Argon2-backed registration is fixture setup, not part of the socket protocol's budget.
+  beforeEach(async () => {
+    fixtureServer = await startSocketServer();
+    fixtureOwner = await register(fixtureServer.app);
+    fixtureMember = await register(fixtureServer.app);
+  });
+  afterEach(async () => {
+    vi.restoreAllMocks();
+    await fixtureServer?.close();
+  });
+
   it("catches up after a disconnect without missing or duplicating messages", async () => {
-    const server = await startSocketServer();
+    const server = fixtureServer;
     const sockets: ClientSocket[] = [];
     let client: ReturnType<typeof createReliableChatClient> | undefined;
     try {
-      const owner = await register(server.app);
-      const reader = await register(server.app);
+      const owner = fixtureOwner;
+      const reader = fixtureMember;
       const created = await owner.agent
         .post("/api/v1/channels")
         .set(csrfHeaders)
@@ -176,10 +252,15 @@ describe("Socket.IO chat events", () => {
       ownedChannelIds.push(channelId);
       await reader.agent.post(`/api/v1/channels/${channelId}/join`).set(csrfHeaders).expect(204);
       const sender = await connect(server.url, owner.cookie);
-      const receiver = await connect(server.url, reader.cookie);
+      const receiver = await connect(server.url, reader.cookie, origin, {
+        reconnection: true,
+        ...testReconnection,
+      });
       sockets.push(sender, receiver);
       let onSynced = () => {};
-      const initialSync = new Promise<void>((resolve) => {
+      let onSyncFailure: (error: Error) => void = () => {};
+      const initialSync = waitFor("initial channel:sync / onSynced", (resolve, reject) => {
+        onSyncFailure = reject;
         onSynced = resolve;
       });
       const received: MessageNew[] = [];
@@ -189,7 +270,11 @@ describe("Socket.IO chat events", () => {
         channels: { [channelId]: null },
         onMessage: (message) => received.push(message),
         onSendState: () => {},
-        onSyncError: (_channel, error) => errors.push(error),
+        acknowledgementTimeoutMs: 1_000,
+        onSyncError: (_channel, error) => {
+          errors.push(error);
+          onSyncFailure(new Error(`channel:sync failed: ${error}`));
+        },
         onSynced: () => onSynced(),
       });
       await initialSync;
@@ -203,9 +288,9 @@ describe("Socket.IO chat events", () => {
         if (!result.ok) throw new Error(result.error.code);
         stored.push(result.message);
       };
-      const firstLive = new Promise<void>((resolve) =>
-        receiver.once("message:new", () => resolve()),
-      );
+      const firstLive = waitFor("first live message:new", (resolve) => {
+        receiver.once("message:new", () => resolve());
+      });
       await send();
       await firstLive;
       expect(client.getLastSeen()[channelId]).toBe(stored[0]?.id);
@@ -213,7 +298,8 @@ describe("Socket.IO chat events", () => {
       await send();
       await send();
       await send();
-      const resynced = new Promise<void>((resolve) => {
+      const resynced = waitFor("reconnect channel:sync / onSynced", (resolve, reject) => {
+        onSyncFailure = reject;
         onSynced = resolve;
       });
       receiver.connect();
@@ -222,28 +308,193 @@ describe("Socket.IO chat events", () => {
       expect(received).toEqual(stored);
       expect(new Set(received.map((message) => message.id)).size).toBe(stored.length);
       // A repeated reconnect with the same cursor must not re-deliver history.
-      const repeat = new Promise<void>((resolve) => {
+      const repeat = waitFor("repeat channel:sync / onSynced", (resolve, reject) => {
+        onSyncFailure = reject;
         onSynced = resolve;
       });
       await client.reconnect();
       await repeat;
       expect(received).toEqual(stored);
+
+      const automatic = waitFor(
+        "automatic reconnect channel:sync / onSynced",
+        (resolve, reject) => {
+          onSynced = resolve;
+          onSyncFailure = reject;
+        },
+      );
+      const reconnectAttempt = waitFor("Manager reconnect_attempt", (resolve) => {
+        receiver.io.once("reconnect_attempt", () => resolve());
+      });
+      receiver.io.engine.close();
+      await reconnectAttempt;
+      await automatic;
+      expect(received).toEqual(stored);
     } finally {
       client?.dispose();
       for (const socket of sockets) socket.disconnect();
-      await server.close();
     }
   });
 
+  it("rejoins before fetching and merges messages sent across both catch-up boundaries", async () => {
+    const server = fixtureServer;
+    const sockets: ClientSocket[] = [];
+    const allowJoin = gate();
+    const joining = gate();
+    const snapshot = gate<() => void>();
+    let client: ReturnType<typeof createReliableChatClient> | undefined;
+    try {
+      const created = await fixtureOwner.agent
+        .post("/api/v1/channels")
+        .set(csrfHeaders)
+        .send({ name: `sync-race-${randomUUID()}` })
+        .expect(201);
+      const channelId = created.body.channel.id as string;
+      ownedChannelIds.push(channelId);
+      await fixtureMember.agent
+        .post(`/api/v1/channels/${channelId}/join`)
+        .set(csrfHeaders)
+        .expect(204);
+      const sender = await connect(server.url, fixtureOwner.cookie);
+      const receiver = await connect(server.url, fixtureMember.cookie);
+      sockets.push(sender, receiver);
+      // Intentionally paused delivery must not consume the client's acknowledgement budget.
+      // Socket transports already captured their real timers; named waits and Vitest's
+      // unchanged test deadline also remain real. Only the client's timeout clock is paused.
+      vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+      const received: MessageNew[] = [];
+      const stored: MessageNew[] = [];
+      let onSynced = () => {};
+      let onSyncFailure: (error: Error) => void = () => {};
+      const initial = waitFor("race test initial channel:sync", (resolve, reject) => {
+        onSynced = resolve;
+        onSyncFailure = reject;
+      });
+      client = createReliableChatClient({
+        socket: receiver,
+        channels: { [channelId]: null },
+        acknowledgementTimeoutMs: 1_000,
+        onMessage: (message) => received.push(message),
+        onSendState: () => {},
+        onSyncError: (_channel, error) => onSyncFailure(new Error(error)),
+        onSynced: () => onSynced(),
+      });
+      await initial;
+      const send = async (body: string) => {
+        const result = await sendMessage(sender, {
+          channelId,
+          body,
+          clientMessageId: randomUUID(),
+        });
+        if (!result.ok) throw new Error(result.error.code);
+        stored.push(result.message);
+        return result.message;
+      };
+      const serverSocket = server.io.sockets.sockets.get(receiver.id ?? "");
+      if (!serverSocket) throw new Error("Race test receiver missing on server.");
+      // Remove the automatic connection-time room join so it cannot mask a bad sync order.
+      await serverSocket.leave(`channel:${channelId}`);
+      await send("offline before sync");
+      const join = serverSocket.join.bind(serverSocket);
+      vi.spyOn(serverSocket, "join").mockImplementation(async (rooms) => {
+        joining.resolve();
+        await allowJoin.promise;
+        await join(rooms);
+        // This one must appear in both live delivery and the subsequent history snapshot.
+        await send("live and history overlap");
+      });
+      serverSocket.use((packet, next) => {
+        if (packet[0] === "channel:sync") {
+          const acknowledge = packet[2] as (result: ChannelSyncAcknowledgement) => void;
+          packet[2] = (result: ChannelSyncAcknowledgement) => {
+            snapshot.resolve(() => acknowledge(result));
+          };
+        }
+        next();
+      });
+      const synced = waitFor("gated catch-up onSynced", (resolve, reject) => {
+        onSynced = resolve;
+        onSyncFailure = reject;
+      });
+      const syncing = client.reconnect();
+      await waitForGate("sync room join starting", joining);
+      // A fetch-before-join implementation has already taken its snapshot and loses this one.
+      await send("committed while room join is paused");
+      allowJoin.resolve();
+      const deliverHistory = await waitForGate("history snapshot acknowledgement", snapshot);
+      const live = waitFor("live message after history snapshot", (resolve) => {
+        const listener = (message: MessageNew) => {
+          if (message.body === "committed after history snapshot") resolve();
+        };
+        receiver.on("message:new", listener);
+        return () => {
+          receiver.off("message:new", listener);
+        };
+      });
+      await send("committed after history snapshot");
+      await live;
+      deliverHistory();
+      await synced;
+      await syncing;
+      expect(received).toEqual(stored);
+      expect(client.getMessages()).toEqual(stored);
+      expect(new Set(received.map((message) => message.id)).size).toBe(stored.length);
+    } finally {
+      allowJoin.resolve();
+      client?.dispose();
+      vi.useRealTimers();
+      for (const socket of sockets) socket.disconnect();
+    }
+  });
+
+  it("awaits disconnect cleanup before allowing the Redis adapter to close", async () => {
+    const server = fixtureServer;
+    const socket = await connect(server.url, fixtureOwner.cookie);
+    const removeStarted = gate();
+    const allowRemove = gate();
+    const sendCommand = redis.sendCommand.bind(redis);
+    const commandSpy = vi.spyOn(redis, "sendCommand").mockImplementation(async (...args) => {
+      if (args[0][0] === "EVAL" && args[0].at(-2) === "remove") {
+        removeStarted.resolve();
+        await allowRemove.promise;
+      }
+      return sendCommand(...args);
+    });
+    let closed = false;
+    const httpClosed = waitFor("HTTP server close", (resolve) => {
+      server.io.httpServer.once("close", () => resolve());
+    });
+    const closing = server.io.close().then(() => {
+      closed = true;
+    });
+    try {
+      await waitForGate("presence.remove during shutdown", removeStarted);
+      // The ordinary HTTP close callback must have completed too, making this independent of timing.
+      await httpClosed;
+      await waitFor("HTTP close promise continuations", (resolve) => {
+        setImmediate(resolve);
+      });
+      expect(closed, "Socket shutdown must await the paused presence removal").toBe(false);
+    } finally {
+      allowRemove.resolve();
+      await closing;
+      commandSpy.mockRestore();
+      socket.disconnect();
+    }
+    expect(
+      await redis.zCard(`${server.redisKeyPrefix}presence:connections:${fixtureOwner.userId}`),
+    ).toBe(0);
+  });
+
   it("delivers across two instances and counts one user's tabs across both", async () => {
-    const prefix = `relay:test:cluster:${randomUUID()}:`;
-    const first = await startSocketServer(prefix);
+    const prefix = fixtureServer.redisKeyPrefix;
+    const first = fixtureServer;
     const second = await startSocketServer(prefix);
     const sockets: ClientSocket[] = [];
     try {
       expect(first.url).not.toBe(second.url);
-      const owner = await register(first.app);
-      const member = await register(second.app);
+      const owner = fixtureOwner;
+      const member = fixtureMember;
       await request(second.app).get("/api/v1/auth/me").set("Cookie", owner.cookie).expect(200);
       const created = await owner.agent
         .post("/api/v1/channels")
@@ -256,13 +507,15 @@ describe("Socket.IO chat events", () => {
       const observer = await connect(second.url, member.cookie);
       sockets.push(observer);
       const join = (socket: ClientSocket) =>
-        new Promise<void>((resolve, reject) => {
+        waitFor("channel:join acknowledgement", (resolve, reject) => {
           socket.emit("channel:join", { channelId }, (result) =>
             result.ok ? resolve() : reject(new Error(result.error.code)),
           );
         });
       await join(observer);
-      const online = new Promise((resolve) => observer.once("presence:update", resolve));
+      const online = waitFor<unknown>("online presence:update", (resolve) => {
+        observer.once("presence:update", resolve);
+      });
       const ownerA = await connect(first.url, owner.cookie);
       sockets.push(ownerA);
       await join(ownerA);
@@ -272,7 +525,9 @@ describe("Socket.IO chat events", () => {
       await join(ownerB);
       expect(await redis.zCard(`${prefix}presence:connections:${owner.userId}`)).toBe(2);
 
-      const received = new Promise<MessageNew>((resolve) => observer.once("message:new", resolve));
+      const received = waitFor<MessageNew>("cross-instance message:new", (resolve) => {
+        observer.once("message:new", resolve);
+      });
       const result = await sendMessage(ownerA, {
         channelId,
         body: "Across instances",
@@ -285,15 +540,17 @@ describe("Socket.IO chat events", () => {
       // Observe server-side disconnect completion before issuing the next Redis barrier.
       const serverSocket = first.io.sockets.sockets.get(ownerA.id ?? "");
       if (!serverSocket) throw new Error("First instance socket missing.");
-      const disconnected = new Promise<void>((resolve) =>
-        serverSocket.once("disconnect", () => resolve()),
-      );
+      const disconnected = waitFor("server disconnect", (resolve) => {
+        serverSocket.once("disconnect", () => resolve());
+      });
       ownerA.disconnect();
       await disconnected;
       await join(ownerB);
       expect(await redis.zCard(`${prefix}presence:connections:${owner.userId}`)).toBe(1);
       expect(await redis.zScore(`${prefix}presence:users`, owner.userId)).not.toBeNull();
-      const offline = new Promise((resolve) => observer.once("presence:update", resolve));
+      const offline = waitFor<unknown>("offline presence:update", (resolve) => {
+        observer.once("presence:update", resolve);
+      });
       ownerB.disconnect();
       expect(await offline).toEqual({ userId: owner.userId, status: "offline" });
       expect(await redis.zCard(`${prefix}presence:connections:${owner.userId}`)).toBe(0);
@@ -302,35 +559,18 @@ describe("Socket.IO chat events", () => {
       expect(polling.status).toBe(400);
     } finally {
       for (const socket of sockets) socket.disconnect();
-      await first.close();
       await second.close();
     }
   });
 
-  it("counts two tabs and expires a crashed connection lease in Redis", async () => {
-    const prefix = `relay:test:presence:${randomUUID()}:`;
-    redisPrefixes.push(prefix);
-    const presence = createPresenceStore(redis, prefix, 100);
-    const userId = randomUUID();
-    expect(await presence.touch(userId, "tab-one")).toBe(1);
-    expect(await presence.touch(userId, "tab-two")).toBe(0);
-    expect(await presence.remove(userId, "tab-one")).toBe(0);
-    expect(await presence.sweep()).toEqual([]);
-    // No disconnect cleanup or heartbeat: simulate a crashed instance.
-    await new Promise((resolve) => setTimeout(resolve, 150));
-    expect(await presence.sweep()).toEqual([userId]);
-    expect(await presence.sweep()).toEqual([]);
-    expect(await redis.exists(`${prefix}presence:connections:${userId}`)).toBe(0);
-  });
-
   it("authenticates two clients, persists once, and broadcasts a stored message", async () => {
-    const server = await startSocketServer();
+    const server = fixtureServer;
     let ownerSocket: ClientSocket | undefined;
     let memberSocket: ClientSocket | undefined;
     let secondTab: ClientSocket | undefined;
     try {
-      const owner = await register(server.app);
-      const member = await register(server.app);
+      const owner = fixtureOwner;
+      const member = fixtureMember;
       const channelResponse = await owner.agent
         .post("/api/v1/channels")
         .set(csrfHeaders)
@@ -343,25 +583,35 @@ describe("Socket.IO chat events", () => {
       ownerSocket = await connect(server.url, owner.cookie);
       memberSocket = await connect(server.url, member.cookie);
       // The join acknowledgement is a barrier for asynchronous connection setup.
-      await new Promise<void>((resolve) =>
-        memberSocket?.emit("channel:join", { channelId }, () => resolve()),
-      );
-      const typingStarted = new Promise((resolve) => memberSocket?.once("typing:start", resolve));
-      const typingStopped = new Promise((resolve) => memberSocket?.once("typing:stop", resolve));
+      await waitFor("member channel:join acknowledgement", (resolve) => {
+        memberSocket?.emit("channel:join", { channelId }, () => resolve());
+      });
+      const typingStarted = waitFor<unknown>("typing:start", (resolve) => {
+        memberSocket?.once("typing:start", resolve);
+      });
+      const typingStopped = waitFor<unknown>("typing:stop expiry", (resolve) => {
+        memberSocket?.once("typing:stop", resolve);
+      });
       ownerSocket.emit("typing:start", { channelId });
       expect(await typingStarted).toEqual({ channelId, userId: owner.userId });
       expect(await typingStopped).toEqual({ channelId, userId: owner.userId });
       secondTab = await connect(server.url, owner.cookie);
-      await new Promise<void>((resolve) =>
-        secondTab?.emit("channel:join", { channelId }, () => resolve()),
-      );
+      await waitFor("second tab channel:join acknowledgement", (resolve) => {
+        secondTab?.emit("channel:join", { channelId }, () => resolve());
+      });
       expect(
         await redis.zCard(`${server.redisKeyPrefix}presence:connections:${owner.userId}`),
       ).toBe(2);
+      const secondTabOnServer = server.io.sockets.sockets.get(secondTab.id ?? "");
+      if (!secondTabOnServer) throw new Error("Second tab missing on server.");
+      const secondTabDisconnected = waitFor("second tab server disconnect", (resolve) => {
+        secondTabOnServer.once("disconnect", () => resolve());
+      });
       secondTab.disconnect();
-      const received = new Promise<MessageNew>((resolve) =>
-        memberSocket?.once("message:new", resolve),
-      );
+      await secondTabDisconnected;
+      const received = waitFor<MessageNew>("member message:new", (resolve) => {
+        memberSocket?.once("message:new", resolve);
+      });
       const clientMessageId = `socket-message-${randomUUID()}`;
       const first = await sendMessage(ownerSocket, {
         channelId,
@@ -394,17 +644,16 @@ describe("Socket.IO chat events", () => {
       ownerSocket?.disconnect();
       secondTab?.disconnect();
       memberSocket?.disconnect();
-      await server.close();
     }
   });
 
   it("rejects an invalid origin and removes a departed member before the next broadcast", async () => {
-    const server = await startSocketServer();
+    const server = fixtureServer;
     let ownerSocket: ClientSocket | undefined;
     let memberSocket: ClientSocket | undefined;
     try {
-      const owner = await register(server.app);
-      const member = await register(server.app);
+      const owner = fixtureOwner;
+      const member = fixtureMember;
       const channelResponse = await owner.agent
         .post("/api/v1/channels")
         .set(csrfHeaders)
@@ -418,7 +667,9 @@ describe("Socket.IO chat events", () => {
         transports: ["websocket"],
         extraHeaders: { Cookie: member.cookie, Origin: "https://untrusted.example" },
       });
-      await new Promise<void>((resolve) => rejected.once("connect_error", () => resolve()));
+      await waitFor("invalid-origin connect_error", (resolve) => {
+        rejected.once("connect_error", () => resolve());
+      });
       rejected.disconnect();
 
       ownerSocket = await connect(server.url, owner.cookie);
@@ -440,7 +691,27 @@ describe("Socket.IO chat events", () => {
     } finally {
       ownerSocket?.disconnect();
       memberSocket?.disconnect();
-      await server.close();
     }
+  });
+});
+
+describe("Redis presence leases", () => {
+  it("counts two tabs and expires a crashed connection lease in Redis", async () => {
+    const prefix = `relay:test:presence:${randomUUID()}:`;
+    redisPrefixes.push(prefix);
+    const presence = createPresenceStore(redis, prefix, 100);
+    const userId = randomUUID();
+    expect(await presence.touch(userId, "tab-one")).toBe(1);
+    expect(await presence.touch(userId, "tab-two")).toBe(0);
+    expect(await presence.remove(userId, "tab-one")).toBe(0);
+    expect(await presence.sweep()).toEqual([]);
+    // No disconnect cleanup or heartbeat: simulate a crashed instance.
+    await expect
+      .poll(() => presence.sweep(), {
+        message: "Redis must expire the crashed connection lease and report the offline transition",
+      })
+      .toEqual([userId]);
+    expect(await presence.sweep()).toEqual([]);
+    expect(await redis.exists(`${prefix}presence:connections:${userId}`)).toBe(0);
   });
 });

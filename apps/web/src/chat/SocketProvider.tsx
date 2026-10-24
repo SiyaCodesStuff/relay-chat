@@ -8,23 +8,23 @@ import {
   type ReactNode,
 } from "react";
 import { useQueryClient } from "@tanstack/react-query";
-import { io, type Socket } from "socket.io-client";
 import {
   createReliableChatClient,
   messageNewSchema,
   presenceUpdateSchema,
   typingUpdateSchema,
-  type ClientToServerEvents,
-  type ServerToClientEvents,
   type MessageNew,
   type AuthUser,
 } from "@relay-chat/shared";
 import type { LocalSend } from "./model.js";
+import {
+  createChatSocket,
+  type ChatSocket,
+  type SocketFactory,
+  type ReconnectionOptions,
+} from "./socket.js";
+export type { ChatSocket, SocketFactory } from "./socket.js";
 
-export type ChatSocket = Socket<ServerToClientEvents, ClientToServerEvents>;
-export type SocketFactory = () => ChatSocket;
-const defaultFactory: SocketFactory = () =>
-  io({ transports: ["websocket"], withCredentials: true, autoConnect: false });
 type Runtime = {
   socket: ChatSocket;
   clients: Map<string, ReturnType<typeof createReliableChatClient>>;
@@ -47,11 +47,13 @@ const SocketContext = createContext<SocketContextValue | null>(null);
 export function SocketProvider({
   children,
   user,
-  socketFactory = defaultFactory,
+  socketFactory = createChatSocket,
+  reconnection,
 }: {
   children: ReactNode;
   user: AuthUser;
   socketFactory?: SocketFactory;
+  reconnection?: ReconnectionOptions;
 }) {
   const queryClient = useQueryClient();
   const runtime = useRef<Runtime | null>(null);
@@ -84,7 +86,7 @@ export function SocketProvider({
   }, []);
 
   useEffect(() => {
-    const socket = socketFactory();
+    const socket = socketFactory(reconnection);
     const state: Runtime = { socket, clients: new Map() };
     runtime.current = state;
     let invalidateTimer: ReturnType<typeof setTimeout> | undefined;
@@ -161,7 +163,7 @@ export function SocketProvider({
       socket.removeAllListeners();
       socket.disconnect();
     };
-  }, [queryClient, receive, socketFactory, user.id]);
+  }, [queryClient, receive, reconnection, socketFactory, user.id]);
 
   const watch = useCallback(
     (channelId: string, after: string | null) => {
