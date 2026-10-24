@@ -1,10 +1,12 @@
-import { useEffect, useRef } from "react";
+import { lazy, Suspense, useEffect, useRef } from "react";
 import { Link, Navigate, Outlet, Route, Routes, useLocation } from "react-router";
-import { useMutation } from "@tanstack/react-query";
 import { useAuth } from "./auth/AuthProvider.js";
 import { AuthPage } from "./auth/AuthPage.js";
 import { Button } from "./components/ui/button.js";
 import { ThemeToggle } from "./components/theme-toggle.js";
+const ChatScreen = lazy(() =>
+  import("./chat/ChatScreen.js").then((module) => ({ default: module.ChatScreen })),
+);
 
 function ProtectedRoute() {
   const { user } = useAuth();
@@ -13,28 +15,6 @@ function ProtectedRoute() {
     <Outlet />
   ) : (
     <Navigate to="/login" replace state={{ from: location.pathname + location.search }} />
-  );
-}
-
-function Home() {
-  const { user, logout } = useAuth();
-  const mutation = useMutation({ mutationFn: logout, retry: false });
-  return (
-    <section className="mx-auto w-full max-w-xl rounded-2xl border border-border bg-card p-8 shadow-sm">
-      <p className="mb-3 text-xs font-semibold uppercase tracking-widest text-primary">
-        Your workspace
-      </p>
-      <h1 className="text-3xl font-semibold tracking-tight">Welcome, {user?.displayName}.</h1>
-      <p className="my-4 text-muted-foreground">You’re signed in to Relay Chat as {user?.email}.</p>
-      {mutation.isError && (
-        <p role="alert" className="mb-4 text-sm text-destructive">
-          Couldn’t sign out. Check your connection and try again.
-        </p>
-      )}
-      <Button variant="outline" disabled={mutation.isPending} onClick={() => mutation.mutate()}>
-        {mutation.isPending ? "Signing out…" : "Sign out"}
-      </Button>
-    </section>
   );
 }
 
@@ -73,7 +53,11 @@ export function App() {
         ref={main}
         id="main-content"
         tabIndex={-1}
-        className="mx-auto flex min-h-[calc(100svh-100px)] max-w-6xl items-center justify-center px-6 py-12 outline-none sm:px-10"
+        className={
+          pathname === "/"
+            ? "mx-auto h-[calc(100svh-100px)] max-w-6xl px-2 pb-3 outline-none sm:px-6"
+            : "mx-auto flex min-h-[calc(100svh-100px)] max-w-6xl items-center justify-center px-6 py-12 outline-none sm:px-10"
+        }
       >
         {loading ? (
           <p role="status">Checking your session…</p>
@@ -88,7 +72,14 @@ export function App() {
             <Route path="/login" element={<AuthPage key="login" mode="login" />} />
             <Route path="/register" element={<AuthPage key="register" mode="register" />} />
             <Route element={<ProtectedRoute />}>
-              <Route path="/" element={<Home />} />
+              <Route
+                path="/"
+                element={
+                  <Suspense fallback={<p role="status">Opening your workspace…</p>}>
+                    <ChatScreen />
+                  </Suspense>
+                }
+              />
             </Route>
             <Route
               path="*"

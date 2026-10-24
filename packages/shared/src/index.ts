@@ -125,6 +125,21 @@ export const messageSendAcknowledgementSchema = z.discriminatedUnion("ok", [
 
 export type MessageSend = z.infer<typeof messageSendSchema>;
 export type MessageNew = z.infer<typeof messageNewSchema>;
+export const channelSummarySchema = z.object({
+  id: z.string().uuid(),
+  name: z.string(),
+  isPrivate: z.boolean(),
+  createdBy: z.string().uuid(),
+  unreadCount: z.number().int().nonnegative(),
+  isMember: z.boolean(),
+  onlineUserIds: z.array(z.string().uuid()),
+});
+export const channelListResponseSchema = z.object({ channels: z.array(channelSummarySchema) });
+export const messageHistoryResponseSchema = z.object({
+  messages: z.array(messageNewSchema).max(100),
+  nextCursor: z.string().nullable(),
+});
+export type ChannelSummary = z.infer<typeof channelSummarySchema>;
 export type ChannelJoinEvent = z.infer<typeof channelJoinEventSchema>;
 export type TypingEvent = z.infer<typeof typingEventSchema>;
 export type PresenceUpdate = z.infer<typeof presenceUpdateSchema>;

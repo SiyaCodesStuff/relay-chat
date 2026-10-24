@@ -8,6 +8,7 @@ import { ulid } from "ulid";
 import { createApp } from "../src/app.js";
 import { createDatabase, type Database } from "../src/db/client.js";
 import { channelMembers, channels, messages, users } from "../src/db/schema.js";
+import { createPresenceStore } from "../src/presence.js";
 
 const origin = "http://localhost:5173";
 const csrfHeaders = { origin, "x-csrf-request": "1" };
@@ -19,8 +20,7 @@ let db: Database;
 let closeDatabase: () => Promise<void>;
 let redis: ReturnType<typeof createClient>;
 
-function createTestApp() {
-  const redisKeyPrefix = `relay:test:channels:${randomUUID()}:`;
+function createTestApp(redisKeyPrefix = `relay:test:channels:${randomUUID()}:`) {
   redisPrefixes.push(redisKeyPrefix);
   return createApp({
     db,
@@ -112,6 +112,32 @@ afterAll(async () => {
 });
 
 describe("channel REST API", () => {
+  it("returns caller membership, live presence snapshots, and client message ids in history", async () => {
+    const prefix = `relay:test:channel-presence:${randomUUID()}:`;
+    const app = createTestApp(prefix);
+    const owner = await register(app);
+    const outsider = await register(app);
+    const channel = await createChannel(owner.agent, `presence-${randomUUID()}`);
+    const presence = createPresenceStore(redis, prefix);
+    await presence.touch(owner.userId, "presence-test-connection");
+    const listed = await outsider.agent.get("/api/v1/channels").expect(200);
+    expect(
+      listed.body.channels.find((value: { id: string }) => value.id === channel.id),
+    ).toMatchObject({ isMember: false, onlineUserIds: [owner.userId] });
+    const own = await owner.agent.get("/api/v1/channels").expect(200);
+    expect(
+      own.body.channels.find((value: { id: string }) => value.id === channel.id).isMember,
+    ).toBe(true);
+    const inserted = await insertMessages(channel.id, owner.userId, 1);
+    const history = await owner.agent.get(`/api/v1/channels/${channel.id}/messages`).expect(200);
+    expect(history.body.messages[0].clientMessageId).toBe(inserted[0]?.clientMessageId);
+    await presence.remove(owner.userId, "presence-test-connection");
+    const offline = await owner.agent.get("/api/v1/channels").expect(200);
+    expect(
+      offline.body.channels.find((value: { id: string }) => value.id === channel.id).onlineUserIds,
+    ).toEqual([]);
+  });
+
   it("enforces membership rules and hides private channels from non-members", async () => {
     const app = createTestApp();
     const owner = await register(app);
