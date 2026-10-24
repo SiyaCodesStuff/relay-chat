@@ -1,5 +1,5 @@
 import argon2 from "argon2";
-import { and, asc, desc, eq, isNull, lt, or, sql } from "drizzle-orm";
+import { and, asc, desc, eq, inArray, isNull, lt, or, sql } from "drizzle-orm";
 import express, { type NextFunction, type Request, type Response } from "express";
 import {
   channelIdParamsSchema,
@@ -331,6 +331,7 @@ export function createApp(options: AuthAppOptions) {
           isPrivate: channels.isPrivate,
           createdBy: channels.createdBy,
           unreadCount,
+          isMember: sql<boolean>`${channelMembers.userId} IS NOT NULL`,
         })
         .from(channels)
         .leftJoin(
@@ -340,10 +341,35 @@ export function createApp(options: AuthAppOptions) {
         .where(or(eq(channels.isPrivate, false), eq(channelMembers.userId, userId)))
         .orderBy(asc(channels.name));
 
+      const onlineUsers = (await options.redis.sendCommand([
+        "EVAL",
+        `local t = redis.call('TIME'); return redis.call('ZRANGEBYSCORE', KEYS[1], tonumber(t[1])*1000 + tonumber(t[2])/1000, '+inf')`,
+        "1",
+        `${options.redisKeyPrefix ?? "relay:"}presence:users`,
+      ])) as string[];
+      const onlineMemberships =
+        listedChannels.length && onlineUsers.length
+          ? await options.db
+              .select({ channelId: channelMembers.channelId, userId: channelMembers.userId })
+              .from(channelMembers)
+              .where(
+                and(
+                  inArray(
+                    channelMembers.channelId,
+                    listedChannels.map((channel) => channel.id),
+                  ),
+                  inArray(channelMembers.userId, onlineUsers),
+                ),
+              )
+          : [];
+
       response.status(200).json({
         channels: listedChannels.map((channel) => ({
           ...channel,
           unreadCount: Number(channel.unreadCount),
+          onlineUserIds: onlineMemberships
+            .filter((membership) => membership.channelId === channel.id)
+            .map((membership) => membership.userId),
         })),
       });
     } catch (error) {
@@ -433,6 +459,7 @@ export function createApp(options: AuthAppOptions) {
             id: messages.id,
             channelId: messages.channelId,
             userId: messages.userId,
+            clientMessageId: messages.clientMessageId,
             body: messages.body,
             createdAt: messages.createdAt,
             editedAt: messages.editedAt,
