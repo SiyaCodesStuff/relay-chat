@@ -1,5 +1,16 @@
 # Web app
 
+## Development notes
+
+Reloading a page or closing a tab can close its WebSocket while Vite is still
+forwarding data. `EPIPE`, `ECONNRESET`, and `ERR_STREAM_WRITE_AFTER_END` are expected
+connection-close errors in that situation. The development `/socket.io` proxy
+silently ignores exactly those codes on both proxy and client-socket error
+events. All other errors are logged on one line with their code (`UNKNOWN` when
+absent), without stack traces or request/session data. Persistent unexpected
+errors still need investigation. This changes only Vite's development proxy
+logging; the target, WebSocket transport, and production API behavior are unchanged.
+
 ## Chat workspace
 
 The signed-in route shows channels with unread badges and online-member dots. Channel responses include the caller's `isMember` state and an `onlineUserIds` snapshot calculated from unexpired Redis presence leases. Live presence events refresh that snapshot. Public non-members can preview history and explicitly join before sending.

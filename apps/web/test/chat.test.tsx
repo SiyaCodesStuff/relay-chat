@@ -2,7 +2,7 @@ import { act, fireEvent, render, screen, waitFor, within } from "@testing-librar
 import userEvent from "@testing-library/user-event";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { describe, expect, it, vi } from "vitest";
-import { http, HttpResponse } from "msw";
+import { http, HttpResponse, type RequestHandler } from "msw";
 import { ChatScreen } from "../src/chat/ChatScreen.js";
 import { AuthProvider } from "../src/auth/AuthProvider.js";
 import { MessageBody } from "../src/chat/MessageBody.js";
@@ -42,8 +42,22 @@ function rows(count: number, from = 1): ChatMessage[] {
   }));
 }
 
-function renderChat(socket = new FakeChatSocket(), history: MessageNew[] = [], user = testUser) {
+function responseGate() {
+  let resolve!: () => void;
+  const promise = new Promise<void>((done) => {
+    resolve = done;
+  });
+  return { promise, resolve };
+}
+
+function renderChat(
+  socket = new FakeChatSocket(),
+  history: MessageNew[] = [],
+  user = testUser,
+  handlers: RequestHandler[] = [],
+) {
   server.use(
+    ...handlers,
     http.get(`${apiOrigin}/api/v1/auth/me`, () => HttpResponse.json({ user })),
     http.get(`${apiOrigin}/api/v1/channels`, () => HttpResponse.json({ channels: [channel] })),
     http.get(`${apiOrigin}/api/v1/channels/${channelId}/messages`, () =>
@@ -70,10 +84,18 @@ function renderChat(socket = new FakeChatSocket(), history: MessageNew[] = [], u
 
 describe("chat screen", () => {
   async function readyComposer() {
-    const input = await screen.findByRole("textbox", { name: "Message #general" });
+    // These are separate asynchronous stages. Keep each assertion's default
+    // deadline and the existing test deadline; don't poll for a composer while
+    // authentication and the channel list are still loading.
+    await screen.findByRole("heading", { name: `Welcome, ${testUser.displayName}.` });
+    const navigation = screen.getByRole("navigation", { name: "Channels" });
+    await within(navigation).findByRole("button", { name: /# general/ });
+    const conversation = screen.getByRole("region", { name: "Channel general" });
+    const input = within(conversation).getByRole("textbox", { name: "Message #general" });
     await waitFor(() => expect((input as HTMLTextAreaElement).disabled).toBe(false));
     return input;
   }
+
   it("shows an optimistic send and replaces it once with broadcast plus acknowledgement", async () => {
     const socket = renderChat();
     const composer = await readyComposer();
@@ -96,6 +118,61 @@ describe("chat screen", () => {
     expect(screen.getByRole("img", { name: "1 member online" })).toBeTruthy();
   });
 
+  it("keeps sending unavailable until channels and history have both loaded", async () => {
+    const channelResponse = responseGate();
+    const historyResponse = responseGate();
+    const socket = renderChat(undefined, [], testUser, [
+      http.get(`${apiOrigin}/api/v1/channels`, async () => {
+        await channelResponse.promise;
+        return HttpResponse.json({ channels: [channel] });
+      }),
+      http.get(`${apiOrigin}/api/v1/channels/${channelId}/messages`, async () => {
+        await historyResponse.promise;
+        return HttpResponse.json({ messages: [], nextCursor: null });
+      }),
+    ]);
+    try {
+      await screen.findByRole("heading", { name: `Welcome, ${testUser.displayName}.` });
+      expect(screen.getByText("Loading channels…")).toBeTruthy();
+      expect(screen.queryByRole("textbox", { name: "Message #general" })).toBeNull();
+      expect(socket.sends).toHaveLength(0);
+
+      channelResponse.resolve();
+      const navigation = screen.getByRole("navigation", { name: "Channels" });
+      await within(navigation).findByRole("button", { name: /# general/ });
+      const input = screen.getByRole("textbox", { name: "Message #general" });
+      expect((input as HTMLTextAreaElement).disabled).toBe(true);
+      expect(screen.getByText("Loading messages…")).toBeTruthy();
+      expect(socket.sends).toHaveLength(0);
+
+      historyResponse.resolve();
+      expect(await readyComposer()).toBe(input);
+      expect(screen.queryByText("Loading messages…")).toBeNull();
+    } finally {
+      channelResponse.resolve();
+      historyResponse.resolve();
+    }
+  });
+
+  it("keeps the composer disabled when history fails instead of treating it as ready", async () => {
+    const socket = renderChat(undefined, [], testUser, [
+      http.get(`${apiOrigin}/api/v1/channels/${channelId}/messages`, () =>
+        HttpResponse.json({ error: "INTERNAL_SERVER_ERROR" }, { status: 500 }),
+      ),
+    ]);
+    await screen.findByRole("heading", { name: `Welcome, ${testUser.displayName}.` });
+    await within(screen.getByRole("navigation", { name: "Channels" })).findByRole("button", {
+      name: /# general/,
+    });
+    expect(await screen.findByRole("alert")).toHaveProperty(
+      "textContent",
+      "Couldn’t load messages.",
+    );
+    expect(
+      (screen.getByRole("textbox", { name: "Message #general" }) as HTMLTextAreaElement).disabled,
+    ).toBe(true);
+    expect(socket.sends).toHaveLength(0);
+  });
   it("surfaces a failed send and retries with the same client message id", async () => {
     const socket = renderChat();
     const input = await readyComposer();
