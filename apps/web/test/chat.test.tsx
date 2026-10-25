@@ -42,9 +42,9 @@ function rows(count: number, from = 1): ChatMessage[] {
   }));
 }
 
-function renderChat(socket = new FakeChatSocket(), history: MessageNew[] = []) {
+function renderChat(socket = new FakeChatSocket(), history: MessageNew[] = [], user = testUser) {
   server.use(
-    http.get(`${apiOrigin}/api/v1/auth/me`, () => HttpResponse.json({ user: testUser })),
+    http.get(`${apiOrigin}/api/v1/auth/me`, () => HttpResponse.json({ user })),
     http.get(`${apiOrigin}/api/v1/channels`, () => HttpResponse.json({ channels: [channel] })),
     http.get(`${apiOrigin}/api/v1/channels/${channelId}/messages`, () =>
       HttpResponse.json({ messages: history, nextCursor: null }),
@@ -289,6 +289,26 @@ describe("virtual history scrolling", () => {
 });
 
 describe("safe message rendering", () => {
+  it("renders stored XSS message bodies and display names without creating executable elements", async () => {
+    const displayName = '<img src=x onerror="alert(document.cookie)">';
+    const body = '<svg onload="alert(1)"></svg><script>alert(1)</script>';
+    renderChat(undefined, [stored(1, body)], { ...testUser, displayName });
+    expect(await screen.findByText(`Welcome, ${displayName}.`)).toBeTruthy();
+    expect(await screen.findByText(body)).toBeTruthy();
+    expect(document.querySelector("img, svg, script, iframe, [onerror], [onload]")).toBeNull();
+  });
+  it.each([
+    "javascript:alert(1)",
+    "data:text/html,<script>alert(1)</script>",
+    "vbscript:msgbox(1)",
+    "//evil.example",
+    "file:///etc/passwd",
+    "https://user:pass@example.com",
+  ])("does not link a dangerous or credential-bearing value: %s", (body) => {
+    render(<MessageBody body={body} />);
+    expect(screen.queryByRole("link")).toBeNull();
+    expect(screen.getByText(body)).toBeTruthy();
+  });
   it("renders HTML and dangerous protocols as text and links only safe http URLs", () => {
     const { container } = render(
       <MessageBody
