@@ -76,6 +76,14 @@ export default defineConfig(({ command, isPreview }) => ({
   },
   preview: { host: "127.0.0.1" },
   test: {
+    // Each jsdom worker loads the full UI stack; serialize files to avoid CPU contention.
+    fileParallelism: false,
+    coverage: {
+      provider: "v8",
+      include: ["src/**/*.{ts,tsx}", "security-html.ts"],
+      reporter: ["text", "json-summary", "html"],
+      thresholds: { lines: 80 },
+    },
     environment: "jsdom",
     include: ["test/**/*.test.{ts,tsx}"],
     setupFiles: ["./test/setup.ts"],

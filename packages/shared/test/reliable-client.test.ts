@@ -71,6 +71,55 @@ function setup() {
 afterEach(() => vi.useRealTimers());
 
 describe("reliable chat client", () => {
+  it("rejects malformed or mismatched acknowledgements without publishing a message", async () => {
+    const { socket, client, received } = setup();
+    socket.connect();
+    socket.reply(0, { ok: true, messages: [], hasMore: false });
+    await vi.advanceTimersByTimeAsync(0);
+    client.send({ channelId, body: "test", clientMessageId: "client-1" });
+    socket.reply(1, { ok: true, message: message(2) });
+    expect(client.getSends()[0]).toMatchObject({ status: "failed", error: "INVALID_ACK" });
+    client.retry("client-1");
+    socket.reply(2, { unexpected: "payload" });
+    expect(client.getSends()[0]).toMatchObject({ status: "failed", error: "INVALID_ACK" });
+    expect(received).toEqual([]);
+    client.dispose();
+  });
+
+  it.each([
+    { ok: true, messages: [], hasMore: true },
+    { ok: true, messages: [{ ...message(1), channelId: userId }], hasMore: false },
+    { ok: false, error: { code: "NOT_A_MEMBER" } },
+    { invalid: true },
+  ])("surfaces rejected catch-up replies and leaves offline sends queued: %j", async (reply) => {
+    const { socket, client, errors } = setup();
+    client.send({ channelId, body: "queued", clientMessageId: "queued" });
+    socket.connect();
+    socket.reply(0, reply);
+    await vi.advanceTimersByTimeAsync(0);
+    expect(errors).toEqual(["ok" in reply && reply.ok === false ? "NOT_A_MEMBER" : "INVALID_ACK"]);
+    expect(client.getSends()[0]?.status).toBe("queued");
+    expect(socket.calls).toHaveLength(1);
+    client.dispose();
+  });
+
+  it("bounds offline queues and rejects untracked channels without sending", () => {
+    const { socket, client } = setup();
+    expect(() =>
+      client.send({ channelId: userId, body: "wrong", clientMessageId: "wrong" }),
+    ).toThrow("CHANNEL_NOT_TRACKED");
+    for (let i = 0; i < 100; i++)
+      client.send({ channelId, body: "queued", clientMessageId: `queue-${i}` });
+    expect(() => client.send({ channelId, body: "overflow", clientMessageId: "overflow" })).toThrow(
+      "SEND_QUEUE_FULL",
+    );
+    expect(
+      client.send({ channelId, body: "duplicate", clientMessageId: "queue-0" }).payload.body,
+    ).toBe("queued");
+    expect(client.getSends()).toHaveLength(100);
+    expect(socket.calls).toHaveLength(0);
+    client.dispose();
+  });
   it("buffers live events during paged catch-up and dedupes both identifiers", async () => {
     const { socket, client, received } = setup();
     socket.connect();
