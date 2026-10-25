@@ -3,12 +3,16 @@ import { randomBytes } from "node:crypto";
 export const sessionCookieName = "relay_session";
 
 export function readCookie(cookieHeader: string | undefined, name: string) {
-  if (!cookieHeader) return undefined;
+  if (!cookieHeader || cookieHeader.length > 4096) return undefined;
+  let result: string | undefined;
   for (const entry of cookieHeader.split(";")) {
     const [key, ...value] = entry.trim().split("=");
-    if (key === name) return value.join("=");
+    if (key === name) {
+      if (result !== undefined) return undefined;
+      result = value.join("=");
+    }
   }
-  return undefined;
+  return result;
 }
 
 export type RedisConnection = {
@@ -67,7 +71,7 @@ export function createSessionStore(options: SessionOptions) {
     return id;
   }
 
-  async function read(id: string) {
+  async function read(id: string, slide = true) {
     if (!/^[A-Za-z0-9_-]{43}$/.test(id)) return undefined;
     const key = sessionKey(id, keyPrefix);
     const session = parseStoredSession(await options.redis.get(key));
@@ -81,7 +85,8 @@ export function createSessionStore(options: SessionOptions) {
       return undefined;
     }
 
-    await options.redis.expire(key, Math.min(options.ttlSeconds, remainingAbsoluteSeconds));
+    if (slide)
+      await options.redis.expire(key, Math.min(options.ttlSeconds, remainingAbsoluteSeconds));
     return session;
   }
 

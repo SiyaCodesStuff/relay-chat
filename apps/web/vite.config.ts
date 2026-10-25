@@ -4,6 +4,7 @@ import { defineConfig } from "vitest/config";
 import { fileURLToPath, URL as NodeURL } from "node:url";
 import type { EventEmitter } from "node:events";
 import type { ProxyOptions } from "vite";
+import { secureDocument } from "./security-html.js";
 
 const expectedCloseCodes = new Set(["EPIPE", "ECONNRESET", "ERR_STREAM_WRITE_AFTER_END"]);
 
@@ -47,7 +48,17 @@ export const configureSocketProxy: NonNullable<ProxyOptions["configure"]> = (pro
 };
 
 export default defineConfig(({ command, isPreview }) => ({
-  plugins: [react(), tailwindcss()],
+  plugins: [
+    {
+      name: "security-document",
+      transformIndexHtml: {
+        order: "pre",
+        handler: (html, context) => secureDocument(html, Boolean(context.server)),
+      },
+    },
+    react(),
+    tailwindcss(),
+  ],
   resolve: { alias: { "@": fileURLToPath(new NodeURL("./src", import.meta.url)) } },
   server: {
     host: "127.0.0.1",

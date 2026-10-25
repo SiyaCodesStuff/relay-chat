@@ -1,4 +1,6 @@
 import { z } from "zod";
+export { browserContentSecurityPolicy, themeScriptHash } from "./security.js";
+export const emptyRequestSchema = z.object({}).strict();
 
 export const chatMessageSchema = z.object({
   roomId: z.string().uuid(),
@@ -15,16 +17,20 @@ const emailSchema = z
   .transform((email) => email.toLowerCase());
 const passwordSchema = z.string().min(12).max(128);
 
-export const registerRequestSchema = z.object({
-  email: emailSchema,
-  displayName: z.string().trim().min(1).max(80),
-  password: passwordSchema,
-});
+export const registerRequestSchema = z
+  .object({
+    email: emailSchema,
+    displayName: z.string().trim().min(1).max(80),
+    password: passwordSchema,
+  })
+  .strict();
 
-export const loginRequestSchema = z.object({
-  email: emailSchema,
-  password: passwordSchema,
-});
+export const loginRequestSchema = z
+  .object({
+    email: emailSchema,
+    password: passwordSchema,
+  })
+  .strict();
 
 export type RegisterRequest = z.infer<typeof registerRequestSchema>;
 export type LoginRequest = z.infer<typeof loginRequestSchema>;

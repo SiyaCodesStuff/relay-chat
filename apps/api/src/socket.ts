@@ -25,6 +25,7 @@ import type { Database } from "./db/client.js";
 import { channelMembers, messages, users } from "./db/schema.js";
 import { createPresenceStore } from "./presence.js";
 import { createRedisRateLimiter } from "./auth/rate-limit.js";
+import { originAllowlist } from "./security.js";
 
 const maxSocketPayloadBytes = 16 * 1024;
 const socketEventLimit = 30;
@@ -92,7 +93,7 @@ export function createSocketServer(options: SocketServerOptions) {
     options.redisKeyPrefix ?? "relay:",
     options.presenceTtlMs ?? 30_000,
   );
-  const allowedOrigins = new Set(options.allowedOrigins);
+  const allowedOrigins = originAllowlist(options.allowedOrigins);
   const redisPrefix = options.redisKeyPrefix ? { keyPrefix: options.redisKeyPrefix } : {};
   const sessions = createSessionStore({
     redis: options.redis,
@@ -105,7 +106,23 @@ export function createSocketServer(options: SocketServerOptions) {
     ServerToClientEvents,
     Record<string, never>,
     SocketData
-  >(options.httpServer, { maxHttpBufferSize: maxSocketPayloadBytes, transports: ["websocket"] });
+  >(options.httpServer, {
+    maxHttpBufferSize: maxSocketPayloadBytes,
+    transports: ["websocket"],
+    allowRequest: (request, callback) => {
+      void (async () => {
+        if (
+          !allowedOrigins.has(request.headers.origin ?? "") ||
+          (request.headers.cookie?.length ?? 0) > 4096
+        )
+          return false;
+        return rateLimit(request.socket.remoteAddress ?? "unknown", "handshake", 30, 60);
+      })().then(
+        (allowed) => callback(null, allowed),
+        () => callback("Unauthorized socket connection.", false),
+      );
+    },
+  });
   const rateLimit = createRedisRateLimiter({ redis: options.redis, ...redisPrefix });
   const backgroundTasks = new Set<Promise<unknown>>();
   function track<T>(task: Promise<T>) {
@@ -151,9 +168,15 @@ export function createSocketServer(options: SocketServerOptions) {
       );
     const authorisedUserIds = new Set(memberships.map((membership) => membership.userId));
     await Promise.all(
-      connectedSockets
-        .filter((socket) => !authorisedUserIds.has(socket.data.userId))
-        .map((socket) => socket.leave(room)),
+      connectedSockets.map(async (socket) => {
+        const session = authorisedUserIds.has(socket.data.userId)
+          ? await sessions.read(
+              readCookie(socket.handshake.headers.cookie, sessionCookieName) ?? "",
+              false,
+            )
+          : undefined;
+        if (session?.userId !== socket.data.userId) await socket.leave(room);
+      }),
     );
   }
 
@@ -186,6 +209,14 @@ export function createSocketServer(options: SocketServerOptions) {
         for (const socket of io.sockets.sockets.values()) {
           const connectionId = socket.id;
           const userId = socket.data.userId;
+          const session = await sessions.read(
+            readCookie(socket.handshake.headers.cookie, sessionCookieName) ?? "",
+            false,
+          );
+          if (session?.userId !== userId) {
+            socket.disconnect(true);
+            continue;
+          }
           if ((await presence.touch(userId, connectionId)) === 1)
             await announcePresence(userId, "online");
         }
@@ -275,15 +306,52 @@ export function createSocketServer(options: SocketServerOptions) {
       })(),
     );
     // Register handlers immediately; queue packets until asynchronous setup finishes.
-    socket.use((_packet, next) => {
-      void ready.then(
-        () => next(),
-        () => next(new Error("Socket setup failed.")),
-      );
+    socket.use((packet, next) => {
+      void (async () => {
+        await ready;
+        const candidate = packet.at(-1);
+        const acknowledgement =
+          typeof candidate === "function"
+            ? (candidate as (result: SocketActionAcknowledgement) => void)
+            : undefined;
+        if (
+          !(await rateLimit(socket.id, "socket", socketEventLimit, 10)) ||
+          !(await rateLimit(socket.data.userId, "socket-user", 120, 10))
+        ) {
+          reject({ code: "RATE_LIMITED" }, acknowledgement);
+          return;
+        }
+        const session = await sessions.read(
+          readCookie(socket.handshake.headers.cookie, sessionCookieName) ?? "",
+        );
+        const [user] =
+          session?.userId === socket.data.userId
+            ? await options.db
+                .select({ id: users.id })
+                .from(users)
+                .where(and(eq(users.id, session.userId), isNull(users.bannedAt)))
+            : [];
+        if (!user) {
+          reject({ code: "NOT_AUTHENTICATED" }, acknowledgement);
+          socket.disconnect(true);
+          return;
+        }
+        if (
+          !["channel:sync", "channel:join", "message:send", "typing:start", "typing:stop"].includes(
+            String(packet[0]),
+          )
+        ) {
+          reject({ code: "INVALID_PAYLOAD" }, acknowledgement);
+          return;
+        }
+        next();
+      })().catch(() => {
+        socket.emit("error", { code: "INTERNAL_ERROR" });
+        socket.disconnect(true);
+      });
     });
     void ready.catch(() => socket.disconnect(true));
 
-    const isRateAllowed = () => rateLimit(socket.id, "socket", socketEventLimit, 10);
     const reject = <T extends SocketActionAcknowledgement | undefined>(
       error: SocketError,
       acknowledgement?: (result: T) => void,
@@ -300,10 +368,6 @@ export function createSocketServer(options: SocketServerOptions) {
     socket.on("channel:sync", async (payload, acknowledgement) => {
       if (typeof acknowledgement !== "function") return;
       try {
-        if (!(await isRateAllowed())) {
-          reject({ code: "RATE_LIMITED" }, acknowledgement);
-          return;
-        }
         const parsed = channelSyncSchema.safeParse(payload);
         if (!parsed.success) {
           reject({ code: "INVALID_PAYLOAD" }, acknowledgement);
@@ -339,40 +403,36 @@ export function createSocketServer(options: SocketServerOptions) {
 
     socket.on("channel:join", async (payload, acknowledgement) => {
       if (typeof acknowledgement !== "function") return;
-      if (!(await isRateAllowed())) {
-        reject({ code: "RATE_LIMITED" }, acknowledgement);
-        return;
+      try {
+        const parsed = channelJoinEventSchema.safeParse(payload);
+        if (!parsed.success) {
+          reject({ code: "INVALID_PAYLOAD" }, acknowledgement);
+          return;
+        }
+        if (!(await reauthorise(parsed.data.channelId))) {
+          reject({ code: "NOT_A_MEMBER" }, acknowledgement);
+          return;
+        }
+        await socket.join(channelRoom(parsed.data.channelId));
+        acknowledgement({ ok: true });
+      } catch {
+        reject({ code: "INTERNAL_ERROR" }, acknowledgement);
       }
-      const parsed = channelJoinEventSchema.safeParse(payload);
-      if (!parsed.success) {
-        reject({ code: "INVALID_PAYLOAD" }, acknowledgement);
-        return;
-      }
-      if (!(await reauthorise(parsed.data.channelId))) {
-        reject({ code: "NOT_A_MEMBER" }, acknowledgement);
-        return;
-      }
-      await socket.join(channelRoom(parsed.data.channelId));
-      acknowledgement({ ok: true });
     });
 
     socket.on("message:send", async (payload, acknowledgement) => {
       if (typeof acknowledgement !== "function") return;
-      if (!(await isRateAllowed())) {
-        reject({ code: "RATE_LIMITED" }, acknowledgement);
-        return;
-      }
-      const parsed = messageSendSchema.safeParse(payload);
-      if (!parsed.success) {
-        reject({ code: "INVALID_PAYLOAD" }, acknowledgement);
-        return;
-      }
-      if (!(await reauthorise(parsed.data.channelId))) {
-        reject({ code: "NOT_A_MEMBER" }, acknowledgement);
-        return;
-      }
-
       try {
+        const parsed = messageSendSchema.safeParse(payload);
+        if (!parsed.success) {
+          reject({ code: "INVALID_PAYLOAD" }, acknowledgement);
+          return;
+        }
+        if (!(await reauthorise(parsed.data.channelId))) {
+          reject({ code: "NOT_A_MEMBER" }, acknowledgement);
+          return;
+        }
+
         // Allocate in commit order across instances, including within one millisecond.
         const [inserted] = await options.db.transaction(async (transaction) => {
           await transaction.execute(sql`SELECT pg_advisory_xact_lock(732194821)`);
@@ -434,10 +494,6 @@ export function createSocketServer(options: SocketServerOptions) {
     });
 
     const relayTyping = async (eventName: "typing:start" | "typing:stop", payload: TypingEvent) => {
-      if (!(await isRateAllowed())) {
-        reject({ code: "RATE_LIMITED" });
-        return;
-      }
       const parsed = typingEventSchema.safeParse(payload);
       if (!parsed.success) {
         reject({ code: "INVALID_PAYLOAD" });
@@ -468,8 +524,16 @@ export function createSocketServer(options: SocketServerOptions) {
         .emit(eventName, { ...parsed.data, userId: socket.data.userId });
     };
 
-    socket.on("typing:start", (payload) => void relayTyping("typing:start", payload));
-    socket.on("typing:stop", (payload) => void relayTyping("typing:stop", payload));
+    socket.on(
+      "typing:start",
+      (payload) =>
+        void relayTyping("typing:start", payload).catch(() => reject({ code: "INTERNAL_ERROR" })),
+    );
+    socket.on(
+      "typing:stop",
+      (payload) =>
+        void relayTyping("typing:stop", payload).catch(() => reject({ code: "INTERNAL_ERROR" })),
+    );
   });
 
   return io;

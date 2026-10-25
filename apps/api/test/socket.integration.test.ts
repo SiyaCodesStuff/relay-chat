@@ -214,7 +214,7 @@ describe("Socket.IO chat events", () => {
   let fixtureOwner: Awaited<ReturnType<typeof createUserFixture>>;
   let fixtureMember: Awaited<ReturnType<typeof createUserFixture>>;
 
-  // Real Argon2-backed registration is fixture setup, not part of the socket protocol's budget.
+  // Create users/sessions directly; auth hashing is tested by the auth suite.
   beforeEach(async () => {
     fixtureServer = await startSocketServer();
     fixtureOwner = await createUserFixture(fixtureServer);
@@ -223,6 +223,175 @@ describe("Socket.IO chat events", () => {
   afterEach(async () => {
     vi.restoreAllMocks();
     await fixtureServer?.close();
+  });
+
+  it("rejects cross-origin, missing-origin and tampered-session handshakes, including forged allowed Origins", async () => {
+    const server = fixtureServer;
+    const cookie = fixtureOwner.cookie;
+    const tampered = cookie.slice(0, -1) + (cookie.at(-1) === "A" ? "B" : "A");
+    for (const headers of [
+      { Cookie: cookie, Origin: "https://evil.example", "X-Forwarded-Origin": origin },
+      { Cookie: cookie, Origin: `${origin}.evil.example` },
+      { Cookie: cookie, Origin: "null" },
+      { Cookie: cookie },
+      { Cookie: tampered, Origin: origin },
+      { Cookie: `${cookie}; ${cookie}`, Origin: origin },
+      { Origin: origin },
+    ]) {
+      const rejected = createSocketClient(server.url, {
+        reconnection: false,
+        transports: ["websocket"],
+        extraHeaders: headers,
+      });
+      try {
+        await waitFor("security handshake rejection", (resolve, reject) => {
+          rejected.once("connect_error", () => resolve());
+          rejected.once("connect", () => reject(new Error("Unauthorized socket connected.")));
+        });
+      } finally {
+        rejected.disconnect();
+      }
+    }
+    expect(server.io.sockets.sockets.size).toBe(0);
+  });
+
+  it("stores XSS as text, bounds message input, and rate-limits no-ack floods and new tabs", async () => {
+    const server = fixtureServer;
+    const sockets: ClientSocket[] = [];
+    try {
+      const created = await fixtureOwner.agent
+        .post("/api/v1/channels")
+        .set(csrfHeaders)
+        .send({ name: `security-${randomUUID()}` })
+        .expect(201);
+      const channelId = created.body.channel.id as string;
+      ownedChannelIds.push(channelId);
+      const sender = await connect(server.url, fixtureOwner.cookie);
+      sockets.push(sender);
+      const xss = '<img src=x onerror="alert(document.cookie)"><script>alert(1)</script>';
+      const stored = await sendMessage(sender, {
+        channelId,
+        body: xss,
+        clientMessageId: randomUUID(),
+      });
+      expect(stored.ok && stored.message.body === xss).toBe(true);
+      const history = await fixtureOwner.agent
+        .get(`/api/v1/channels/${channelId}/messages`)
+        .expect(200);
+      expect(history.body.messages[0].body).toBe(xss);
+      const invalid = await sendMessage(sender, {
+        channelId,
+        body: "x".repeat(4001),
+        clientMessageId: randomUUID(),
+      });
+      expect(invalid).toEqual({ ok: false, error: { code: "INVALID_PAYLOAD" } });
+      const flood = waitFor("no-ack socket flood rejection", (resolve) => {
+        sender.on("error", (error) => {
+          if (error.code === "RATE_LIMITED") resolve();
+        });
+      });
+      for (let index = 0; index < 31; index += 1) sender.emit("typing:start", { channelId });
+      await flood;
+      expect(
+        Number(await redis.get(`${server.redisKeyPrefix}rate-limit:socket:${sender.id}`)),
+      ).toBeGreaterThanOrEqual(31);
+      // A new connection has a new socket budget, but shares its user's Redis budget.
+      await redis.set(
+        `${server.redisKeyPrefix}rate-limit:socket-user:${fixtureOwner.userId}`,
+        "120",
+        { EX: 10 },
+      );
+      const tab = await connect(server.url, fixtureOwner.cookie);
+      sockets.push(tab);
+      expect(
+        await sendMessage(tab, { channelId, body: "blocked", clientMessageId: randomUUID() }),
+      ).toEqual({ ok: false, error: { code: "RATE_LIMITED" } });
+      const oversized = await connect(server.url, fixtureOwner.cookie);
+      sockets.push(oversized);
+      const disconnected = waitFor("oversized transport frame rejection", (resolve) => {
+        oversized.once("disconnect", () => resolve());
+      });
+      oversized.emit(
+        "message:send",
+        { channelId, body: "x".repeat(20_000), clientMessageId: randomUUID() },
+        () => {},
+      );
+      await disconnected;
+      const [persisted] = await db
+        .select({ count: count() })
+        .from(messages)
+        .where(eq(messages.channelId, channelId));
+      expect(Number(persisted?.count)).toBe(1);
+    } finally {
+      for (const socket of sockets) socket.disconnect();
+    }
+  });
+
+  it("shares the Redis handshake flood limit across API instances", async () => {
+    const server = fixtureServer;
+    const second = await startSocketServer(server.redisKeyPrefix);
+    try {
+      await redis.set(`${server.redisKeyPrefix}rate-limit:handshake:127.0.0.1`, "30", { EX: 60 });
+      for (const url of [server.url, second.url]) {
+        const rejected = createSocketClient(url, {
+          reconnection: false,
+          transports: ["websocket"],
+          extraHeaders: { Origin: origin, Cookie: fixtureOwner.cookie },
+        });
+        try {
+          await waitFor("shared handshake flood rejection", (resolve, reject) => {
+            rejected.once("connect_error", () => resolve());
+            rejected.once("connect", () => reject(new Error("Handshake flood limit bypassed.")));
+          });
+        } finally {
+          rejected.disconnect();
+        }
+      }
+    } finally {
+      await second.close();
+    }
+  });
+
+  it("prunes a revoked session before passive delivery and rejects its next action", async () => {
+    const server = fixtureServer;
+    const sockets: ClientSocket[] = [];
+    try {
+      const created = await fixtureOwner.agent
+        .post("/api/v1/channels")
+        .set(csrfHeaders)
+        .send({ name: `revoked-${randomUUID()}` })
+        .expect(201);
+      const channelId = created.body.channel.id as string;
+      ownedChannelIds.push(channelId);
+      await fixtureMember.agent
+        .post(`/api/v1/channels/${channelId}/join`)
+        .set(csrfHeaders)
+        .expect(204);
+      const sender = await connect(server.url, fixtureOwner.cookie);
+      const receiver = await connect(server.url, fixtureMember.cookie);
+      sockets.push(sender, receiver);
+      await waitFor("revocation join barrier", (resolve) => {
+        receiver.emit("channel:join", { channelId }, () => resolve());
+      });
+      const receiverId = receiver.id ?? "";
+      await redis.del(
+        `${server.redisKeyPrefix}session:${fixtureMember.cookie.slice("relay_session=".length)}`,
+      );
+      const sent = await sendMessage(sender, {
+        channelId,
+        body: "Active sessions only",
+        clientMessageId: randomUUID(),
+      });
+      expect(sent.ok).toBe(true);
+      expect(server.io.sockets.sockets.get(receiverId)?.rooms.has(`channel:${channelId}`)).toBe(
+        false,
+      );
+      expect(
+        await sendMessage(receiver, { channelId, body: "revoked", clientMessageId: randomUUID() }),
+      ).toEqual({ ok: false, error: { code: "NOT_AUTHENTICATED" } });
+    } finally {
+      for (const socket of sockets) socket.disconnect();
+    }
   });
 
   it("catches up after a disconnect without missing or duplicating messages", async () => {
