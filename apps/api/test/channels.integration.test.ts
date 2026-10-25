@@ -9,10 +9,12 @@ import { createApp } from "../src/app.js";
 import { createDatabase, type Database } from "../src/db/client.js";
 import { channelMembers, channels, messages, users } from "../src/db/schema.js";
 import { createPresenceStore } from "../src/presence.js";
+import { measureFixture, reportFixtureTimings } from "./helpers/fixture-timing.js";
+import { createAuthFixture } from "./helpers/auth-fixture.js";
 
 const origin = "http://localhost:5173";
 const csrfHeaders = { origin, "x-csrf-request": "1" };
-const password = "this-is-a-test-password";
+const appPrefixes = new WeakMap<ReturnType<typeof createApp>, string>();
 const ownedChannelIds: string[] = [];
 const ownedUserIds: string[] = [];
 const redisPrefixes: string[] = [];
@@ -22,7 +24,7 @@ let redis: ReturnType<typeof createClient>;
 
 function createTestApp(redisKeyPrefix = `relay:test:channels:${randomUUID()}:`) {
   redisPrefixes.push(redisKeyPrefix);
-  return createApp({
+  const app = createApp({
     db,
     redis,
     allowedOrigins: [origin],
@@ -31,22 +33,18 @@ function createTestApp(redisKeyPrefix = `relay:test:channels:${randomUUID()}:`) 
     sessionAbsoluteTtlSeconds: 60,
     redisKeyPrefix,
   });
+  appPrefixes.set(app, redisKeyPrefix);
+  return app;
 }
 
-function email() {
-  return `channels-${randomUUID()}@example.test`;
+async function createUserFixture(app: ReturnType<typeof createTestApp>) {
+  const redisKeyPrefix = appPrefixes.get(app);
+  if (!redisKeyPrefix) throw new Error("Unknown fixture app.");
+  return measureFixture("channels:user-session", () =>
+    createAuthFixture({ app, db, redis, redisKeyPrefix, ownedUserIds }),
+  );
 }
-
-async function register(app: ReturnType<typeof createTestApp>) {
-  const agent = request.agent(app);
-  const response = await agent
-    .post("/api/v1/auth/register")
-    .set(csrfHeaders)
-    .send({ email: email(), displayName: "Channel test", password })
-    .expect(201);
-  ownedUserIds.push(response.body.user.id as string);
-  return { agent, userId: response.body.user.id as string };
-}
+afterAll(reportFixtureTimings);
 
 async function createChannel(
   agent: ReturnType<typeof request.agent>,
@@ -115,8 +113,8 @@ describe("channel REST API", () => {
   it("returns caller membership, live presence snapshots, and client message ids in history", async () => {
     const prefix = `relay:test:channel-presence:${randomUUID()}:`;
     const app = createTestApp(prefix);
-    const owner = await register(app);
-    const outsider = await register(app);
+    const owner = await createUserFixture(app);
+    const outsider = await createUserFixture(app);
     const channel = await createChannel(owner.agent, `presence-${randomUUID()}`);
     const presence = createPresenceStore(redis, prefix);
     await presence.touch(owner.userId, "presence-test-connection");
@@ -140,9 +138,9 @@ describe("channel REST API", () => {
 
   it("enforces membership rules and hides private channels from non-members", async () => {
     const app = createTestApp();
-    const owner = await register(app);
-    const member = await register(app);
-    const outsider = await register(app);
+    const owner = await createUserFixture(app);
+    const member = await createUserFixture(app);
+    const outsider = await createUserFixture(app);
     const privateChannel = await createChannel(owner.agent, `private-${randomUUID()}`, true);
     const publicChannel = await createChannel(owner.agent, `public-${randomUUID()}`);
 
@@ -186,7 +184,7 @@ describe("channel REST API", () => {
 
   it("returns newest-first stable message pages at empty and boundary cursors", async () => {
     const app = createTestApp();
-    const owner = await register(app);
+    const owner = await createUserFixture(app);
     const channel = await createChannel(owner.agent, `history-${randomUUID()}`);
 
     await owner.agent
@@ -226,8 +224,8 @@ describe("channel REST API", () => {
 
   it("updates unread counts when a member marks a channel message as read", async () => {
     const app = createTestApp();
-    const owner = await register(app);
-    const reader = await register(app);
+    const owner = await createUserFixture(app);
+    const reader = await createUserFixture(app);
     const channel = await createChannel(owner.agent, `unread-${randomUUID()}`);
     await reader.agent.post(`/api/v1/channels/${channel.id}/join`).set(csrfHeaders).expect(204);
     const inserted = await insertMessages(channel.id, owner.userId, 3);
