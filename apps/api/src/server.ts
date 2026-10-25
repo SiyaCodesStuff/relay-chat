@@ -21,6 +21,11 @@ const app = createApp({
   redis,
   allowedOrigins,
   nodeEnv: env.NODE_ENV,
+  passwordCosts: {
+    memoryCost: env.ARGON2_MEMORY_COST,
+    timeCost: env.ARGON2_TIME_COST,
+    parallelism: env.ARGON2_PARALLELISM,
+  },
   sessionTtlSeconds: env.SESSION_TTL_SECONDS,
   sessionAbsoluteTtlSeconds: env.SESSION_ABSOLUTE_TTL_SECONDS,
 });

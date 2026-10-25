@@ -1,4 +1,5 @@
 import argon2 from "argon2";
+import { resolvePasswordCosts, type PasswordCosts } from "./auth/password-parameters.js";
 import { and, asc, desc, eq, inArray, isNull, lt, or, sql } from "drizzle-orm";
 import express, { type NextFunction, type Request, type Response } from "express";
 import {
@@ -23,6 +24,7 @@ const csrfHeader = "x-csrf-request";
 const authFailure = { error: "AUTHENTICATION_FAILED" };
 
 export type AuthAppOptions = {
+  passwordCosts?: Partial<PasswordCosts>;
   db: Database;
   redis: RedisConnection;
   allowedOrigins: readonly string[];
@@ -65,6 +67,7 @@ function notFound(response: Response) {
 }
 
 export function createApp(options: AuthAppOptions) {
+  const passwordCosts = resolvePasswordCosts(options.nodeEnv, options.passwordCosts);
   const app = express();
   const secureCookie = options.nodeEnv === "production";
   const allowedOrigins = new Set(options.allowedOrigins);
@@ -165,7 +168,10 @@ export function createApp(options: AuthAppOptions) {
         return;
       }
 
-      const passwordHash = await argon2.hash(payload.data.password, { type: argon2.argon2id });
+      const passwordHash = await argon2.hash(payload.data.password, {
+        type: argon2.argon2id,
+        ...passwordCosts,
+      });
       const [user] = await options.db
         .insert(users)
         .values({

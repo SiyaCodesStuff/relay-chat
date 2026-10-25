@@ -1,4 +1,5 @@
 import { randomBytes, randomUUID } from "node:crypto";
+import argon2 from "argon2";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { eq, inArray } from "drizzle-orm";
 import { migrate } from "drizzle-orm/node-postgres/migrator";
@@ -7,6 +8,8 @@ import request, { type Response } from "supertest";
 import { createApp } from "../src/app.js";
 import { createDatabase, type Database } from "../src/db/client.js";
 import * as schema from "../src/db/schema.js";
+import { measureFixture, reportFixtureTimings } from "./helpers/fixture-timing.js";
+import { createAuthFixture, testPasswordCosts } from "./helpers/auth-fixture.js";
 
 const origin = "http://localhost:5173";
 const csrfHeaders = { origin, "x-csrf-request": "1" };
@@ -32,6 +35,7 @@ function authApp(
     redis,
     allowedOrigins: [origin],
     nodeEnv: "test",
+    passwordCosts: testPasswordCosts,
     sessionTtlSeconds: 60,
     sessionAbsoluteTtlSeconds: 60,
     redisKeyPrefix: prefix,
@@ -54,14 +58,17 @@ function sessionId(response: Response) {
 }
 
 async function register(agent: ReturnType<typeof request.agent>, address = email()) {
-  const response = await agent
-    .post("/api/v1/auth/register")
-    .set(csrfHeaders)
-    .send({ email: address, displayName: "Auth test", password })
-    .expect(201);
-  ownedUserIds.push(response.body.user.id as string);
-  return response;
+  return measureFixture("auth:registration", async () => {
+    const response = await agent
+      .post("/api/v1/auth/register")
+      .set(csrfHeaders)
+      .send({ email: address, displayName: "Auth test", password })
+      .expect(201);
+    ownedUserIds.push(response.body.user.id as string);
+    return response;
+  });
 }
+afterAll(reportFixtureTimings);
 
 beforeAll(async () => {
   const databaseUrl = process.env.DATABASE_URL_TEST;
@@ -100,6 +107,13 @@ describe("authentication", () => {
     const agent = request.agent(app);
     const address = email();
     const registration = await register(agent, address.toUpperCase());
+    const [storedUser] = await db
+      .select({ passwordHash: schema.users.passwordHash })
+      .from(schema.users)
+      .where(eq(schema.users.id, registration.body.user.id));
+    // Assert only booleans so a failed assertion cannot print a password hash.
+    expect(storedUser?.passwordHash.startsWith("$argon2id$")).toBe(true);
+    expect(argon2.needsRehash(storedUser!.passwordHash, testPasswordCosts)).toBe(false);
 
     expect(registration.body.user).toMatchObject({
       email: address,
@@ -120,11 +134,18 @@ describe("authentication", () => {
   });
 
   it("invalidates the pre-login session when login rotates its id", async () => {
-    const app = authApp();
-    const agent = request.agent(app);
-    const address = email();
-    const registration = await register(agent, address);
-    const oldSessionId = sessionId(registration);
+    const redisKeyPrefix = newPrefix();
+    const app = authApp(redisKeyPrefix);
+    const fixture = await createAuthFixture({
+      app,
+      db,
+      redis,
+      redisKeyPrefix,
+      ownedUserIds,
+      password,
+    });
+    const { agent, email: address } = fixture;
+    const oldSessionId = fixture.cookie.split("=")[1];
 
     const login = await agent
       .post("/api/v1/auth/login")
@@ -144,9 +165,15 @@ describe("authentication", () => {
   it("slides idle expiry but rejects sessions beyond their absolute lifetime", async () => {
     const prefix = newPrefix();
     const app = authApp(prefix);
-    const agent = request.agent(app);
-    const registration = await register(agent);
-    const currentSessionId = sessionId(registration);
+    const fixture = await createAuthFixture({
+      app,
+      db,
+      redis,
+      redisKeyPrefix: prefix,
+      ownedUserIds,
+    });
+    const { agent } = fixture;
+    const currentSessionId = fixture.cookie.split("=")[1];
     const currentKey = `${prefix}session:${currentSessionId}`;
 
     await redis.expire(currentKey, 1);
@@ -156,7 +183,7 @@ describe("authentication", () => {
     const expiredId = randomBytes(32).toString("base64url");
     await redis.set(
       `${prefix}session:${expiredId}`,
-      JSON.stringify({ userId: registration.body.user.id, createdAt: Date.now() - 61_000 }),
+      JSON.stringify({ userId: fixture.userId, createdAt: Date.now() - 61_000 }),
       { EX: 60 },
     );
     await request(app)
@@ -213,14 +240,15 @@ describe("authentication", () => {
   });
 
   it("reads a ban made after login before authorising the next request", async () => {
-    const app = authApp();
-    const agent = request.agent(app);
-    const registration = await register(agent);
+    const redisKeyPrefix = newPrefix();
+    const app = authApp(redisKeyPrefix);
+    const fixture = await createAuthFixture({ app, db, redis, redisKeyPrefix, ownedUserIds });
+    const { agent } = fixture;
 
     await db
       .update(schema.users)
       .set({ bannedAt: new Date() })
-      .where(eq(schema.users.id, registration.body.user.id));
+      .where(eq(schema.users.id, fixture.userId));
 
     await agent.get("/api/v1/auth/me").expect(401).expect(authFailure());
   });

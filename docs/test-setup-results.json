@@ -1,0 +1,510 @@
+{
+  "baseline": {
+    "phase": "before",
+    "availableParallelism": 8,
+    "results": [
+      {
+        "phase": "before",
+        "mode": "idle",
+        "index": 1,
+        "exitCode": 0,
+        "wallMs": 29663.139805,
+        "loadWorkers": 0,
+        "loadProcessCpuMs": 111.901,
+        "summary": "22 passed (22)",
+        "failures": [],
+        "fixtures": [
+          {
+            "label": "auth:registration",
+            "count": 4,
+            "totalMs": 2228.676856,
+            "meanMs": 557.169214
+          },
+          {
+            "label": "channels:user-session",
+            "count": 8,
+            "totalMs": 5572.331741000007,
+            "meanMs": 696.5414676250009
+          },
+          {
+            "label": "sockets:user-session",
+            "count": 12,
+            "totalMs": 5214.901382999991,
+            "meanMs": 434.57511524999927
+          }
+        ]
+      }
+    ]
+  },
+  "after": {
+    "phase": "after",
+    "availableParallelism": 8,
+    "results": [
+      {
+        "phase": "after",
+        "mode": "idle",
+        "index": 1,
+        "exitCode": 0,
+        "wallMs": 17573.770542000002,
+        "loadWorkers": 0,
+        "loadProcessCpuMs": 85.566,
+        "summary": "22 passed (22)",
+        "failures": [],
+        "fixtures": [
+          {
+            "label": "auth:registration",
+            "count": 1,
+            "totalMs": 237.30033600000024,
+            "meanMs": 237.30033600000024
+          },
+          {
+            "label": "channels:user-session",
+            "count": 8,
+            "totalMs": 239.37158199999976,
+            "meanMs": 29.92144774999997
+          },
+          {
+            "label": "sockets:user-session",
+            "count": 12,
+            "totalMs": 239.17479599999933,
+            "meanMs": 19.931232999999946
+          }
+        ]
+      },
+      {
+        "phase": "after",
+        "mode": "idle",
+        "index": 2,
+        "exitCode": 0,
+        "wallMs": 11938.007913000001,
+        "loadWorkers": 0,
+        "loadProcessCpuMs": 31.219,
+        "summary": "22 passed (22)",
+        "failures": [],
+        "fixtures": [
+          {
+            "label": "auth:registration",
+            "count": 1,
+            "totalMs": 243.4793149999996,
+            "meanMs": 243.4793149999996
+          },
+          {
+            "label": "channels:user-session",
+            "count": 8,
+            "totalMs": 255.76105499999994,
+            "meanMs": 31.970131874999993
+          },
+          {
+            "label": "sockets:user-session",
+            "count": 12,
+            "totalMs": 608.9817140000005,
+            "meanMs": 50.748476166666705
+          }
+        ]
+      },
+      {
+        "phase": "after",
+        "mode": "idle",
+        "index": 3,
+        "exitCode": 0,
+        "wallMs": 7433.160223000003,
+        "loadWorkers": 0,
+        "loadProcessCpuMs": 13.93,
+        "summary": "22 passed (22)",
+        "failures": [],
+        "fixtures": [
+          {
+            "label": "auth:registration",
+            "count": 1,
+            "totalMs": 140.27134499999966,
+            "meanMs": 140.27134499999966
+          },
+          {
+            "label": "channels:user-session",
+            "count": 8,
+            "totalMs": 93.29662400000007,
+            "meanMs": 11.662078000000008
+          },
+          {
+            "label": "sockets:user-session",
+            "count": 12,
+            "totalMs": 121.76335499999959,
+            "meanMs": 10.146946249999965
+          }
+        ]
+      },
+      {
+        "phase": "after",
+        "mode": "idle",
+        "index": 4,
+        "exitCode": 0,
+        "wallMs": 9076.201288000004,
+        "loadWorkers": 0,
+        "loadProcessCpuMs": 11.779,
+        "summary": "22 passed (22)",
+        "failures": [],
+        "fixtures": [
+          {
+            "label": "auth:registration",
+            "count": 1,
+            "totalMs": 215.96971600000006,
+            "meanMs": 215.96971600000006
+          },
+          {
+            "label": "channels:user-session",
+            "count": 8,
+            "totalMs": 771.2122839999979,
+            "meanMs": 96.40153549999974
+          },
+          {
+            "label": "sockets:user-session",
+            "count": 12,
+            "totalMs": 241.57215200000155,
+            "meanMs": 20.131012666666795
+          }
+        ]
+      },
+      {
+        "phase": "after",
+        "mode": "idle",
+        "index": 5,
+        "exitCode": 0,
+        "wallMs": 9269.172318999998,
+        "loadWorkers": 0,
+        "loadProcessCpuMs": 38.94,
+        "summary": "22 passed (22)",
+        "failures": [],
+        "fixtures": [
+          {
+            "label": "auth:registration",
+            "count": 1,
+            "totalMs": 102.68947600000001,
+            "meanMs": 102.68947600000001
+          },
+          {
+            "label": "channels:user-session",
+            "count": 8,
+            "totalMs": 114.23873300000014,
+            "meanMs": 14.279841625000017
+          },
+          {
+            "label": "sockets:user-session",
+            "count": 12,
+            "totalMs": 176.55062300000145,
+            "meanMs": 14.712551916666788
+          }
+        ]
+      },
+      {
+        "phase": "after",
+        "mode": "idle",
+        "index": 6,
+        "exitCode": 0,
+        "wallMs": 8986.968685,
+        "loadWorkers": 0,
+        "loadProcessCpuMs": 18.879,
+        "summary": "22 passed (22)",
+        "failures": [],
+        "fixtures": [
+          {
+            "label": "auth:registration",
+            "count": 1,
+            "totalMs": 114.89436300000034,
+            "meanMs": 114.89436300000034
+          },
+          {
+            "label": "channels:user-session",
+            "count": 8,
+            "totalMs": 81.78051099999993,
+            "meanMs": 10.222563874999992
+          },
+          {
+            "label": "sockets:user-session",
+            "count": 12,
+            "totalMs": 110.1069709999997,
+            "meanMs": 9.175580916666641
+          }
+        ]
+      },
+      {
+        "phase": "after",
+        "mode": "idle",
+        "index": 7,
+        "exitCode": 0,
+        "wallMs": 8166.224888999997,
+        "loadWorkers": 0,
+        "loadProcessCpuMs": 15.947,
+        "summary": "22 passed (22)",
+        "failures": [],
+        "fixtures": [
+          {
+            "label": "auth:registration",
+            "count": 1,
+            "totalMs": 120.83480099999997,
+            "meanMs": 120.83480099999997
+          },
+          {
+            "label": "channels:user-session",
+            "count": 8,
+            "totalMs": 88.32023500000014,
+            "meanMs": 11.040029375000017
+          },
+          {
+            "label": "sockets:user-session",
+            "count": 12,
+            "totalMs": 101.56827700000213,
+            "meanMs": 8.46402308333351
+          }
+        ]
+      },
+      {
+        "phase": "after",
+        "mode": "idle",
+        "index": 8,
+        "exitCode": 0,
+        "wallMs": 9557.16511799999,
+        "loadWorkers": 0,
+        "loadProcessCpuMs": 12.675,
+        "summary": "22 passed (22)",
+        "failures": [],
+        "fixtures": [
+          {
+            "label": "auth:registration",
+            "count": 1,
+            "totalMs": 116.35940199999914,
+            "meanMs": 116.35940199999914
+          },
+          {
+            "label": "channels:user-session",
+            "count": 8,
+            "totalMs": 85.55511800000022,
+            "meanMs": 10.694389750000028
+          },
+          {
+            "label": "sockets:user-session",
+            "count": 12,
+            "totalMs": 106.8625690000008,
+            "meanMs": 8.9052140833334
+          }
+        ]
+      },
+      {
+        "phase": "after",
+        "mode": "idle",
+        "index": 9,
+        "exitCode": 0,
+        "wallMs": 7893.021516000008,
+        "loadWorkers": 0,
+        "loadProcessCpuMs": 13.208,
+        "summary": "22 passed (22)",
+        "failures": [],
+        "fixtures": [
+          {
+            "label": "auth:registration",
+            "count": 1,
+            "totalMs": 257.45559900000035,
+            "meanMs": 257.45559900000035
+          },
+          {
+            "label": "channels:user-session",
+            "count": 8,
+            "totalMs": 159.01563299999816,
+            "meanMs": 19.87695412499977
+          },
+          {
+            "label": "sockets:user-session",
+            "count": 12,
+            "totalMs": 126.07239600000048,
+            "meanMs": 10.50603300000004
+          }
+        ]
+      },
+      {
+        "phase": "after",
+        "mode": "idle",
+        "index": 10,
+        "exitCode": 0,
+        "wallMs": 8951.507975,
+        "loadWorkers": 0,
+        "loadProcessCpuMs": 15.021,
+        "summary": "22 passed (22)",
+        "failures": [],
+        "fixtures": [
+          {
+            "label": "auth:registration",
+            "count": 1,
+            "totalMs": 146.87445900000012,
+            "meanMs": 146.87445900000012
+          },
+          {
+            "label": "channels:user-session",
+            "count": 8,
+            "totalMs": 135.42632800000047,
+            "meanMs": 16.92829100000006
+          },
+          {
+            "label": "sockets:user-session",
+            "count": 12,
+            "totalMs": 153.9673589999993,
+            "meanMs": 12.830613249999942
+          }
+        ]
+      },
+      {
+        "phase": "after",
+        "mode": "cpu-load",
+        "index": 1,
+        "exitCode": 0,
+        "wallMs": 47438.625004,
+        "loadWorkers": 6,
+        "loadProcessCpuMs": 193596.325,
+        "summary": "22 passed (22)",
+        "failures": [],
+        "fixtures": [
+          {
+            "label": "auth:registration",
+            "count": 1,
+            "totalMs": 847.174329999998,
+            "meanMs": 847.174329999998
+          },
+          {
+            "label": "channels:user-session",
+            "count": 8,
+            "totalMs": 455.99447599998166,
+            "meanMs": 56.99930949999771
+          },
+          {
+            "label": "sockets:user-session",
+            "count": 12,
+            "totalMs": 378.033115000002,
+            "meanMs": 31.5027595833335
+          }
+        ]
+      },
+      {
+        "phase": "after",
+        "mode": "cpu-load",
+        "index": 2,
+        "exitCode": 0,
+        "wallMs": 48926.49145100001,
+        "loadWorkers": 6,
+        "loadProcessCpuMs": 223812.574,
+        "summary": "22 passed (22)",
+        "failures": [],
+        "fixtures": [
+          {
+            "label": "auth:registration",
+            "count": 1,
+            "totalMs": 945.4489909999975,
+            "meanMs": 945.4489909999975
+          },
+          {
+            "label": "channels:user-session",
+            "count": 8,
+            "totalMs": 336.71255100000417,
+            "meanMs": 42.08906887500052
+          },
+          {
+            "label": "sockets:user-session",
+            "count": 12,
+            "totalMs": 402.90056999999797,
+            "meanMs": 33.57504749999983
+          }
+        ]
+      },
+      {
+        "phase": "after",
+        "mode": "cpu-load",
+        "index": 3,
+        "exitCode": 0,
+        "wallMs": 45306.96629499999,
+        "loadWorkers": 6,
+        "loadProcessCpuMs": 219787.437,
+        "summary": "22 passed (22)",
+        "failures": [],
+        "fixtures": [
+          {
+            "label": "auth:registration",
+            "count": 1,
+            "totalMs": 404.6905160000024,
+            "meanMs": 404.6905160000024
+          },
+          {
+            "label": "channels:user-session",
+            "count": 8,
+            "totalMs": 304.7029650000022,
+            "meanMs": 38.08787062500028
+          },
+          {
+            "label": "sockets:user-session",
+            "count": 12,
+            "totalMs": 420.21762200000194,
+            "meanMs": 35.01813516666683
+          }
+        ]
+      },
+      {
+        "phase": "after",
+        "mode": "cpu-load",
+        "index": 4,
+        "exitCode": 0,
+        "wallMs": 44204.95283600001,
+        "loadWorkers": 6,
+        "loadProcessCpuMs": 215834.823,
+        "summary": "22 passed (22)",
+        "failures": [],
+        "fixtures": [
+          {
+            "label": "auth:registration",
+            "count": 1,
+            "totalMs": 542.2351190000009,
+            "meanMs": 542.2351190000009
+          },
+          {
+            "label": "channels:user-session",
+            "count": 8,
+            "totalMs": 430.7360809999991,
+            "meanMs": 53.84201012499989
+          },
+          {
+            "label": "sockets:user-session",
+            "count": 12,
+            "totalMs": 404.6272230000068,
+            "meanMs": 33.71893525000056
+          }
+        ]
+      },
+      {
+        "phase": "after",
+        "mode": "cpu-load",
+        "index": 5,
+        "exitCode": 0,
+        "wallMs": 33384.03547599999,
+        "loadWorkers": 6,
+        "loadProcessCpuMs": 160299.903,
+        "summary": "22 passed (22)",
+        "failures": [],
+        "fixtures": [
+          {
+            "label": "auth:registration",
+            "count": 1,
+            "totalMs": 524.0724559999999,
+            "meanMs": 524.0724559999999
+          },
+          {
+            "label": "channels:user-session",
+            "count": 8,
+            "totalMs": 345.2816860000021,
+            "meanMs": 43.16021075000026
+          },
+          {
+            "label": "sockets:user-session",
+            "count": 12,
+            "totalMs": 356.64832300000126,
+            "meanMs": 29.72069358333344
+          }
+        ]
+      }
+    ]
+  }
+}

@@ -4,7 +4,7 @@ import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } 
 import { count, eq, inArray } from "drizzle-orm";
 import { migrate } from "drizzle-orm/node-postgres/migrator";
 import { createClient } from "redis";
-import request, { type Response } from "supertest";
+import request from "supertest";
 import { io as createSocketClient, type Socket, type ManagerOptions } from "socket.io-client";
 import type {
   ChannelSyncAcknowledgement,
@@ -20,10 +20,11 @@ import { createSocketServer } from "../src/socket.js";
 import { createPresenceStore } from "../src/presence.js";
 import { attachRedisAdapter } from "../src/socket-adapter.js";
 import { createReliableChatClient } from "@relay-chat/shared";
+import { measureFixture, reportFixtureTimings } from "./helpers/fixture-timing.js";
+import { createAuthFixture } from "./helpers/auth-fixture.js";
 
 const origin = "http://localhost:5173";
 const csrfHeaders = { origin, "x-csrf-request": "1" };
-const password = "this-is-a-test-password";
 const ownedChannelIds: string[] = [];
 const ownedUserIds: string[] = [];
 const redisPrefixes: string[] = [];
@@ -78,16 +79,6 @@ function waitForGate<T>(label: string, barrier: ReturnType<typeof gate<T>>) {
   });
 }
 
-function sessionCookie(response: Response) {
-  const setCookie = response.get("set-cookie");
-  const cookie = Array.isArray(setCookie)
-    ? setCookie.find((value) => value.startsWith("relay_session="))
-    : setCookie;
-  const match = cookie?.match(/^(relay_session=[^;]+)/);
-  if (!match) throw new Error("Response did not set a session cookie.");
-  return match[1];
-}
-
 async function startSocketServer(redisKeyPrefix = `relay:test:socket:${randomUUID()}:`) {
   redisPrefixes.push(redisKeyPrefix);
   const app = createApp({
@@ -131,20 +122,18 @@ async function startSocketServer(redisKeyPrefix = `relay:test:socket:${randomUUI
   };
 }
 
-async function register(app: Awaited<ReturnType<typeof startSocketServer>>["app"]) {
-  const agent = request.agent(app);
-  const response = await agent
-    .post("/api/v1/auth/register")
-    .set(csrfHeaders)
-    .send({
-      email: `socket-${randomUUID()}@example.test`,
-      displayName: "Socket test",
-      password,
-    })
-    .expect(201);
-  ownedUserIds.push(response.body.user.id as string);
-  return { agent, cookie: sessionCookie(response), userId: response.body.user.id as string };
+async function createUserFixture(server: Awaited<ReturnType<typeof startSocketServer>>) {
+  return measureFixture("sockets:user-session", () =>
+    createAuthFixture({
+      app: server.app,
+      db,
+      redis,
+      redisKeyPrefix: server.redisKeyPrefix,
+      ownedUserIds,
+    }),
+  );
 }
+afterAll(reportFixtureTimings);
 
 function connect(
   url: string,
@@ -222,14 +211,14 @@ afterAll(async () => {
 
 describe("Socket.IO chat events", () => {
   let fixtureServer: Awaited<ReturnType<typeof startSocketServer>>;
-  let fixtureOwner: Awaited<ReturnType<typeof register>>;
-  let fixtureMember: Awaited<ReturnType<typeof register>>;
+  let fixtureOwner: Awaited<ReturnType<typeof createUserFixture>>;
+  let fixtureMember: Awaited<ReturnType<typeof createUserFixture>>;
 
   // Real Argon2-backed registration is fixture setup, not part of the socket protocol's budget.
   beforeEach(async () => {
     fixtureServer = await startSocketServer();
-    fixtureOwner = await register(fixtureServer.app);
-    fixtureMember = await register(fixtureServer.app);
+    fixtureOwner = await createUserFixture(fixtureServer);
+    fixtureMember = await createUserFixture(fixtureServer);
   });
   afterEach(async () => {
     vi.restoreAllMocks();
