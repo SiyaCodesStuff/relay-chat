@@ -1,5 +1,6 @@
 import { z } from "zod";
 import { passwordEnvironmentSchema, resolvePasswordCosts } from "./auth/password-parameters.js";
+import { originAllowlist } from "./security.js";
 
 const envSchema = z
   .object({
@@ -32,6 +33,7 @@ export function parseEnvironment(source: NodeJS.ProcessEnv): AppEnvironment {
     );
   }
 
+  originAllowlist(result.data.ALLOWED_ORIGINS.split(",").map((origin) => origin.trim()));
   resolvePasswordCosts(result.data.NODE_ENV, {
     memoryCost: result.data.ARGON2_MEMORY_COST,
     timeCost: result.data.ARGON2_TIME_COST,

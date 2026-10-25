@@ -102,6 +102,119 @@ afterAll(async () => {
 });
 
 describe("authentication", () => {
+  it("does not authenticate a tampered cookie or a forged allowed Origin", async () => {
+    const redisKeyPrefix = newPrefix();
+    const app = authApp(redisKeyPrefix);
+    const fixture = await createAuthFixture({ app, db, redis, redisKeyPrefix, ownedUserIds });
+    const old = fixture.cookie;
+    const last = old.at(-1) === "A" ? "B" : "A";
+    for (const cookie of [
+      old.slice(0, -1) + last,
+      `${old}; ${old}`,
+      "relay_session=../../forged",
+      "relay_session=" + "A".repeat(43),
+    ]) {
+      await request(app)
+        .get("/api/v1/auth/me")
+        .set("Origin", origin)
+        .set("Cookie", cookie)
+        .expect(401)
+        .expect(authFailure());
+    }
+    await fixture.agent.get("/api/v1/auth/me").expect(200);
+  });
+
+  it("sets host-only production cookie flags and returns identical invalid-login errors", async () => {
+    const redisKeyPrefix = newPrefix();
+    const app = authApp(redisKeyPrefix);
+    const fixture = await createAuthFixture({
+      app,
+      db,
+      redis,
+      redisKeyPrefix,
+      ownedUserIds,
+      password,
+    });
+    const production = createApp({
+      db,
+      redis,
+      redisKeyPrefix,
+      allowedOrigins: [origin],
+      nodeEnv: "production",
+      sessionTtlSeconds: 60,
+      sessionAbsoluteTtlSeconds: 60,
+    });
+    const loggedIn = await request(production)
+      .post("/api/v1/auth/login")
+      .set(csrfHeaders)
+      .send({ email: fixture.email, password })
+      .expect(200);
+    const cookie = loggedIn.get("set-cookie")?.[0] ?? "";
+    // Assert attributes individually, never print the session identifier.
+    for (const flag of ["HttpOnly", "Secure", "SameSite=Lax", "Path=/"])
+      expect(cookie.includes(flag)).toBe(true);
+    expect(cookie.toLowerCase().includes("domain=")).toBe(false);
+    for (const address of [fixture.email, email()]) {
+      await request(app)
+        .post("/api/v1/auth/login")
+        .set(csrfHeaders)
+        .send({ email: address, password: "wrong-password-long-enough" })
+        .expect(401)
+        .expect(authFailure());
+    }
+    const logout = await request(production)
+      .post("/api/v1/auth/logout")
+      .set(csrfHeaders)
+      .expect(204);
+    const cleared = logout.get("set-cookie")?.[0] ?? "";
+    expect(cleared.includes("Secure")).toBe(true);
+    expect(cleared.includes("HttpOnly")).toBe(true);
+  });
+
+  it("shares the HTTP flood budget across instances and ignores forged forwarding addresses", async () => {
+    const redisKeyPrefix = newPrefix();
+    const options = {
+      db,
+      redis,
+      redisKeyPrefix,
+      allowedOrigins: [origin],
+      nodeEnv: "test" as const,
+      sessionTtlSeconds: 60,
+      sessionAbsoluteTtlSeconds: 60,
+      httpRateLimit: { limit: 2, windowSeconds: 60 },
+    };
+    const first = createApp(options);
+    const second = createApp(options);
+    await request(first).get("/api/v1/auth/me").set("X-Forwarded-For", "192.0.2.1").expect(401);
+    await request(second).get("/api/v1/auth/me").set("X-Forwarded-For", "192.0.2.2").expect(401);
+    await request(first)
+      .get("/api/v1/auth/me")
+      .set("X-Forwarded-For", "192.0.2.3")
+      .expect(429)
+      .expect({ error: "RATE_LIMITED" });
+  });
+
+  it("stores an XSS display name as bounded plain data without returning a hash", async () => {
+    const app = authApp();
+    const agent = request.agent(app);
+    const displayName = '<img src=x onerror="alert(document.cookie)">';
+    const response = await agent
+      .post("/api/v1/auth/register")
+      .set(csrfHeaders)
+      .send({ email: email(), displayName, password })
+      .expect(201);
+    ownedUserIds.push(response.body.user.id as string);
+    expect(response.body.user.displayName).toBe(displayName);
+    expect(Object.keys(response.body.user).sort()).toEqual(["displayName", "email", "id", "role"]);
+    const me = await agent.get("/api/v1/auth/me").expect(200);
+    expect(me.body.user.displayName).toBe(displayName);
+    await request(app)
+      .post("/api/v1/auth/register")
+      .set(csrfHeaders)
+      .send({ email: email(), displayName: "x".repeat(81), password })
+      .expect(400);
+  });
+
   it("registers, logs in, reports the current user, and logs out", async () => {
     const app = authApp();
     const agent = request.agent(app);

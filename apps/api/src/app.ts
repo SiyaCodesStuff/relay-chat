@@ -4,6 +4,7 @@ import { and, asc, desc, eq, inArray, isNull, lt, or, sql } from "drizzle-orm";
 import express, { type NextFunction, type Request, type Response } from "express";
 import {
   channelIdParamsSchema,
+  emptyRequestSchema,
   createChannelRequestSchema,
   listMessagesQuerySchema,
   loginRequestSchema,
@@ -19,6 +20,7 @@ import {
 } from "./auth/session.js";
 import type { Database } from "./db/client.js";
 import { channelMembers, channels, messages, users } from "./db/schema.js";
+import { originAllowlist, securityHeaders } from "./security.js";
 
 const csrfHeader = "x-csrf-request";
 const authFailure = { error: "AUTHENTICATION_FAILED" };
@@ -34,6 +36,7 @@ export type AuthAppOptions = {
   redisKeyPrefix?: string;
   loginRateLimit?: { limit: number; windowSeconds: number };
   registerRateLimit?: { limit: number; windowSeconds: number };
+  httpRateLimit?: { limit: number; windowSeconds: number };
 };
 
 function setSessionCookie(response: Response, id: string, secure: boolean) {
@@ -70,7 +73,7 @@ export function createApp(options: AuthAppOptions) {
   const passwordCosts = resolvePasswordCosts(options.nodeEnv, options.passwordCosts);
   const app = express();
   const secureCookie = options.nodeEnv === "production";
-  const allowedOrigins = new Set(options.allowedOrigins);
+  const allowedOrigins = originAllowlist(options.allowedOrigins);
   const redisPrefix = options.redisKeyPrefix ? { keyPrefix: options.redisKeyPrefix } : {};
   const sessions = createSessionStore({
     redis: options.redis,
@@ -86,7 +89,67 @@ export function createApp(options: AuthAppOptions) {
   const registerRateLimit = options.registerRateLimit ?? { limit: 5, windowSeconds: 600 };
 
   app.disable("x-powered-by");
-  app.use(express.json({ limit: "16kb" }));
+  app.use(securityHeaders(secureCookie));
+  app.use((request, response, next) => {
+    const origin = request.header("origin");
+    if (origin !== undefined && !allowedOrigins.has(origin)) {
+      response.status(403).json({
+        error: ["GET", "HEAD", "OPTIONS"].includes(request.method)
+          ? "ORIGIN_REJECTED"
+          : "CSRF_REJECTED",
+      });
+      return;
+    }
+    if (
+      request.originalUrl.length > 2048 ||
+      (request.header("cookie")?.length ?? 0) > 4096 ||
+      Number(request.header("content-length") ?? 0) > 16 * 1024
+    ) {
+      response.status(413).json({ error: "INPUT_TOO_LARGE" });
+      return;
+    }
+    if (
+      (request.header("transfer-encoding") !== undefined ||
+        Number(request.header("content-length") ?? 0) > 0) &&
+      !request.is("application/json")
+    ) {
+      response.status(415).json({ error: "INVALID_REQUEST" });
+      return;
+    }
+    next();
+  });
+  app.use("/api/v1", async (request, response, next) => {
+    try {
+      const limit = options.httpRateLimit ?? { limit: 120, windowSeconds: 60 };
+      if (
+        !(await isRateAllowed(request.ip ?? "unknown", "http", limit.limit, limit.windowSeconds))
+      ) {
+        response.status(429).json({ error: "RATE_LIMITED" });
+        return;
+      }
+      next();
+    } catch (error) {
+      next(error);
+    }
+  });
+  app.use(express.json({ limit: "16kb", inflate: false }));
+  app.use("/api/v1", (request, response, next) => {
+    const isHistory =
+      request.method === "GET" && /^\/channels\/[^/]+\/messages$/.test(request.path);
+    const hasBodySchema =
+      request.method === "POST" &&
+      (request.path === "/channels" ||
+        /^\/auth\/(register|login)$/.test(request.path) ||
+        /^\/channels\/[^/]+\/read$/.test(request.path));
+    if (
+      (!isHistory && !emptyRequestSchema.safeParse(request.query).success) ||
+      (!hasBodySchema && !emptyRequestSchema.safeParse(request.body ?? {}).success)
+    ) {
+      invalidRequest(response);
+      return;
+    }
+    next();
+  });
   app.get("/healthz", (_request, response) => response.status(200).json({ status: "ok" }));
 
   function requireCsrf(request: Request, response: Response, next: NextFunction) {
@@ -544,6 +607,20 @@ export function createApp(options: AuthAppOptions) {
   app.use((_error: unknown, _request: Request, response: Response, _next: NextFunction) => {
     // Database errors may include query parameter values, including a password hash.
     void _next;
+    if (typeof _error === "object" && _error !== null && "type" in _error) {
+      if (_error.type === "entity.too.large") {
+        response.status(413).json({ error: "INPUT_TOO_LARGE" });
+        return;
+      }
+      if (
+        _error.type === "entity.parse.failed" ||
+        _error.type === "encoding.unsupported" ||
+        _error.type === "charset.unsupported"
+      ) {
+        response.status(400).json({ error: "INVALID_REQUEST" });
+        return;
+      }
+    }
     console.error("Unexpected API error.");
     response.status(500).json({ error: "INTERNAL_SERVER_ERROR" });
   });
@@ -553,4 +630,5 @@ export function createApp(options: AuthAppOptions) {
 
 export const app = express();
 app.disable("x-powered-by");
+app.use(securityHeaders(false));
 app.get("/healthz", (_request, response) => response.status(200).json({ status: "ok" }));
