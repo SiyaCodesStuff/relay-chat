@@ -1,4 +1,4 @@
-import { render, screen } from "@testing-library/react";
+import { render, screen, waitFor } from "@testing-library/react";
 import { describe, expect, it, vi } from "vitest";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { MemoryRouter } from "react-router";
@@ -38,6 +38,8 @@ describe("web app smoke test", () => {
   it("protects the workspace and supplies a skip link", async () => {
     renderApp();
     expect(screen.getByRole("status").textContent).toBe("Checking your session…");
+    // Session resolution and the router redirect are separate transitions.
+    await waitFor(() => expect(screen.queryByText("Checking your session…")).toBeNull());
     expect(await screen.findByRole("heading", { name: "Sign in to Relay Chat" })).toBeTruthy();
     expect(screen.getByRole("link", { name: "Skip to main content" }).getAttribute("href")).toBe(
       "#main-content",

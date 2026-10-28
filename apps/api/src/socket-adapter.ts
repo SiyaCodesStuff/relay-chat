@@ -15,8 +15,8 @@ export async function attachRedisAdapter(
     await Promise.all([publisher.connect(), subscriber.connect()]);
     io.adapter(createAdapter(publisher, subscriber, { key }));
   } catch (error) {
-    publisher.destroy();
-    subscriber.destroy();
+    if (publisher.isOpen) publisher.destroy();
+    if (subscriber.isOpen) subscriber.destroy();
     throw error;
   }
   return async () => {

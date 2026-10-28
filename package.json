@@ -14,16 +14,20 @@
   "scripts": {
     "dev": "node scripts/dev.mjs",
     "build": "npm run build --workspaces --if-present",
-    "lint": "npm run lint --workspaces --if-present",
-    "typecheck": "npm run build --workspace=@relay-chat/shared && npm run typecheck --workspaces --if-present",
+    "lint": "npm run lint --workspaces --if-present && eslint e2e playwright.config.ts scripts/coverage*.mjs",
+    "typecheck": "npm run build --workspace=@relay-chat/shared && npm run typecheck --workspaces --if-present && tsc -p tsconfig.e2e.json",
     "test": "npm run test --workspaces --if-present",
+    "test:coverage": "npm run build --workspace=@relay-chat/shared && node scripts/coverage.mjs",
+    "test:e2e": "npm run build && node --env-file-if-exists=.env --import tsx node_modules/@playwright/test/cli.js test",
     "test:integration": "npm run test:integration --workspace=@relay-chat/api",
     "format": "prettier --write --ignore-unknown .",
     "format:check": "prettier --check --ignore-unknown ."
   },
   "devDependencies": {
     "@eslint/js": "^9.39.5",
+    "@playwright/test": "^1.64.1",
     "@types/node": "^24.19.2",
+    "@vitest/coverage-v8": "^5.0.5",
     "eslint": "^9.39.5",
     "eslint-config-prettier": "^10.1.8",
     "eslint-plugin-jsx-a11y": "^6.10.2",
