@@ -35,6 +35,7 @@ type SocketData = {
 };
 
 export type SocketServerOptions = {
+  scheduler?: SocketScheduler;
   httpServer: HttpServer;
   db: Database;
   redis: RedisConnection;
@@ -45,6 +46,12 @@ export type SocketServerOptions = {
   presenceTtlMs?: number;
   heartbeatIntervalMs?: number;
   typingTtlMs?: number;
+};
+
+export type SocketScheduler = {
+  now(): number;
+  interval(task: () => void | Promise<void>, milliseconds: number): () => void;
+  timeout(task: () => void | Promise<void>, milliseconds: number): () => void;
 };
 
 function channelRoom(channelId: string) {
@@ -88,6 +95,19 @@ function messageForClient(message: {
 }
 
 export function createSocketServer(options: SocketServerOptions) {
+  const scheduler: SocketScheduler = options.scheduler ?? {
+    now: Date.now,
+    interval(task, milliseconds) {
+      const timer = setInterval(task, milliseconds);
+      timer.unref();
+      return () => clearInterval(timer);
+    },
+    timeout(task, milliseconds) {
+      const timer = setTimeout(task, milliseconds);
+      timer.unref();
+      return () => clearTimeout(timer);
+    },
+  };
   const presence = createPresenceStore(
     options.redis,
     options.redisKeyPrefix ?? "relay:",
@@ -201,10 +221,10 @@ export function createSocketServer(options: SocketServerOptions) {
   }
 
   let heartbeatRunning = false;
-  const heartbeat = setInterval(() => {
+  const cancelHeartbeat = scheduler.interval(() => {
     if (heartbeatRunning) return;
     heartbeatRunning = true;
-    void track(
+    return track(
       (async () => {
         for (const socket of io.sockets.sockets.values()) {
           const connectionId = socket.id;
@@ -228,14 +248,13 @@ export function createSocketServer(options: SocketServerOptions) {
         }),
     );
   }, options.heartbeatIntervalMs ?? 10_000);
-  heartbeat.unref();
-  options.httpServer.once("close", () => clearInterval(heartbeat));
+  options.httpServer.once("close", cancelHeartbeat);
 
   // Socket.IO closes transports synchronously, but our disconnect handlers do Redis/DB work.
   // Keep the adapter's Redis clients alive until that work (including setup) has settled.
   const close = io.close.bind(io);
   io.close = async (callback) => {
-    clearInterval(heartbeat);
+    cancelHeartbeat();
     let closeError: Error | undefined;
     await close((error) => {
       closeError = error;
@@ -272,11 +291,11 @@ export function createSocketServer(options: SocketServerOptions) {
   });
 
   io.on("connection", (socket) => {
-    const typing = new Map<string, { timer: ReturnType<typeof setTimeout>; lastEmitted: number }>();
+    const typing = new Map<string, { cancel: () => void; lastEmitted: number }>();
     const stopTyping = async (channelId: string) => {
       const state = typing.get(channelId);
       if (!state) return;
-      clearTimeout(state.timer);
+      state.cancel();
       typing.delete(channelId);
       await pruneChannelRoom(channelId);
       socket
@@ -346,11 +365,15 @@ export function createSocketServer(options: SocketServerOptions) {
         }
         next();
       })().catch(() => {
-        socket.emit("error", { code: "INTERNAL_ERROR" });
+        const candidate = packet.at(-1);
+        reject({ code: "INTERNAL_ERROR" }, typeof candidate === "function" ? candidate : undefined);
         socket.disconnect(true);
       });
     });
-    void ready.catch(() => socket.disconnect(true));
+    void ready.catch(() => {
+      socket.emit("error", { code: "INTERNAL_ERROR" });
+      socket.disconnect(true);
+    });
 
     const reject = <T extends SocketActionAcknowledgement | undefined>(
       error: SocketError,
@@ -509,14 +532,13 @@ export function createSocketServer(options: SocketServerOptions) {
         return;
       }
       const previous = typing.get(channelId);
-      if (previous) clearTimeout(previous.timer);
-      const now = Date.now();
+      if (previous) previous.cancel();
+      const now = scheduler.now();
       const shouldEmit = !previous || now - previous.lastEmitted >= 1_000;
-      const timer = setTimeout(() => {
-        void track(stopTyping(channelId).catch(() => console.error("Typing expiry failed.")));
+      const cancel = scheduler.timeout(() => {
+        return track(stopTyping(channelId).catch(() => console.error("Typing expiry failed.")));
       }, options.typingTtlMs ?? 3_000);
-      timer.unref();
-      typing.set(channelId, { timer, lastEmitted: shouldEmit ? now : previous.lastEmitted });
+      typing.set(channelId, { cancel, lastEmitted: shouldEmit ? now : previous.lastEmitted });
       if (!shouldEmit) return;
       await pruneChannelRoom(parsed.data.channelId);
       socket
