@@ -9,3 +9,15 @@ coverage/
 *.log
 playwright-report/
 test-results/
+
+# added: test, load and tooling artifacts
+scripts/load/results/
+playwright/.auth/
+e2e/.auth/
+**/storageState*.json
+**/*.tsbuildinfo
+*.pem
+*.key
+blob-report/
+.vite/
+*:Zone.Identifier

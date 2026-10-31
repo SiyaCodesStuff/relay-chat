@@ -1,0 +1,119 @@
+{
+  "environment": {
+    "date": "2026-10-28T10:58:06.804Z",
+    "node": "v24.22.0",
+    "k6": "k6 v2.3.0 (commit/e088784614, go1.26.8, linux/amd64)",
+    "logicalCPUs": 8,
+    "cpu": "Intel(R) Core(TM) i5-10210U CPU @ 1.60GHz",
+    "freeMemoryGiB": 1.4715690612792969,
+    "sameHostGenerator": true,
+    "apiInstances": 2,
+    "fixtureDatabase": "dedicated test database",
+    "productionLimitsEnabled": true
+  },
+  "runs": [
+    {
+      "runId": "0500601c-28a3-46c9-9646-7953d6b2c146",
+      "config": {
+        "connections": 8,
+        "channelSize": 8,
+        "rate": 1,
+        "seconds": 20,
+        "p95": 500,
+        "messages": 20
+      },
+      "exitCode": 99,
+      "at": "2026-10-28T10:58:52.050Z",
+      "plannedMessages": 160,
+      "expectedDeliveries": 1280,
+      "connected": 8,
+      "joined": 8,
+      "submitted": 160,
+      "acknowledged": 160,
+      "received": 1280,
+      "lost": 0,
+      "duplicates": 0,
+      "sendErrorRate": 0,
+      "p95DeliveryMs": 812.1999999999998,
+      "p99DeliveryMs": 1143.8400000000001,
+      "p95CrossInstanceMs": 818.7499999999984,
+      "p95AckMs": 780.6499999999994,
+      "p95GeneratorLagMs": 5.249999999999915,
+      "terminalReports": 8,
+      "persisted": 160,
+      "uniquePersisted": 160,
+      "reconciled": true,
+      "api": [
+        {
+          "instance": 0,
+          "samples": 24,
+          "averageCpuPercent": 21.033637312362483,
+          "p95CpuPercent": 73.66807313098361,
+          "peakCpuPercent": 79.38268842167255,
+          "p95EventLoopDelayMs": 25.395199,
+          "p95EventLoopUtilization": 0.47960248190852267,
+          "p95PoolWaiting": 0
+        },
+        {
+          "instance": 1,
+          "samples": 25,
+          "averageCpuPercent": 22.798422652791157,
+          "p95CpuPercent": 80.20421127015777,
+          "peakCpuPercent": 153.0957023405105,
+          "p95EventLoopDelayMs": 19.087359,
+          "p95EventLoopUtilization": 0.5347898120556586,
+          "p95PoolWaiting": 0
+        }
+      ],
+      "database": {
+        "advisoryWaitSamples": 21,
+        "activeSamples": 28,
+        "cpuP95Percent": 64.75,
+        "advisory": {
+          "count": 160,
+          "avgMs": 36.008856818749884,
+          "p95OfIntervalP95Ms": 463.55096200000116,
+          "maxMs": 630.8323019999989
+        },
+        "insert": {
+          "count": 160,
+          "avgMs": 8.925814906249888,
+          "p95OfIntervalP95Ms": 60.4865549999995,
+          "maxMs": 661.6378960000002
+        },
+        "select": {
+          "count": 640,
+          "avgMs": 6.069726620312537,
+          "p95OfIntervalP95Ms": 115.67840499999966,
+          "maxMs": 477.5072199999995
+        },
+        "transaction": {
+          "count": 160,
+          "avgMs": 64.79989529374998,
+          "p95OfIntervalP95Ms": 684.8782369999972,
+          "maxMs": 746.9509450000005
+        }
+      },
+      "redis": {
+        "cpuPercent": 2.8431080714652546,
+        "cpuP95Percent": 33.14,
+        "commandsPerSecond": 99.81621523907083,
+        "pingP95Ms": 5.084731000002648,
+        "reads": {
+          "count": 1460,
+          "avgMs": 2.6341796116438365,
+          "p95OfIntervalP95Ms": 14.921157000000676,
+          "maxMs": 21.514741999999387
+        }
+      },
+      "generator": {
+        "cpuP95Percent": 36
+      },
+      "monitoring": {
+        "dockerSamples": 100,
+        "databaseSamples": 100,
+        "probeFailures": 0
+      }
+    }
+  ]
+}
