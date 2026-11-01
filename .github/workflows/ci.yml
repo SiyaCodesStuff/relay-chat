@@ -1,0 +1,115 @@
+name: CI
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+    tags: ["v*"]
+permissions:
+  contents: read
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ !startsWith(github.ref, 'refs/tags/') }}
+jobs:
+  checks:
+    name: Quality, integration and coverage
+    runs-on: ubuntu-24.04
+    services:
+      postgres:
+        image: postgres:17-alpine@sha256:266d3c257594e195b309ae9d1805e54c788f1d7b375f56bf6c367aac6c917e7b
+        env:
+          POSTGRES_HOST_AUTH_METHOD: trust
+        ports: ["127.0.0.1:5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -h 127.0.0.1 -U postgres"
+          --health-interval 5s --health-timeout 3s --health-retries 10
+      redis:
+        image: redis:8-alpine@sha256:21090af93f8324db2f0f0f4f38a7c60369d47d917e000c3423d89d2ae2883537
+        ports: ["127.0.0.1:6379:6379"]
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 5s --health-timeout 3s --health-retries 10
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version-file: .nvmrc
+          cache: npm
+      - name: Install locked dependencies without running lifecycle scripts
+        run: npm ci --ignore-scripts
+      - name: Generate isolated database credentials and create CI database
+        run: node scripts/ci/environment.mjs integration
+      - name: Require password authentication after local service bootstrap
+        env:
+          POSTGRES_CONTAINER: ${{ job.services.postgres.id }}
+        run: |
+          docker exec "$POSTGRES_CONTAINER" sh -c 'sed -i "/^host/s/trust$/scram-sha-256/" "$PGDATA/pg_hba.conf"'
+          docker exec "$POSTGRES_CONTAINER" psql -U postgres -d postgres -v ON_ERROR_STOP=1 -c 'SELECT pg_reload_conf();'
+      - name: Formatting
+        run: npm run format:check
+      - name: TypeScript typecheck
+        run: npm run typecheck
+      - name: ESLint
+        run: npm run lint && npx --no-install eslint scripts/ci
+      - name: Workspace unit and Docker configuration tests
+        run: npm test
+      - name: CI tooling and load-harness tests
+        run: node --test scripts/ci/*.test.mjs scripts/load/*.test.mjs
+      - name: Apply Drizzle migrations to CI test database
+        run: npm run db:migrate:test --workspace=@relay-chat/api
+      - name: Real PostgreSQL and Redis integration tests
+        run: npm run test:integration
+      - name: Coverage with existing workspace thresholds
+        id: coverage
+        run: |
+          rm -f docs/coverage.md
+          npm run test:coverage
+      - name: Coverage summary
+        if: ${{ always() && (steps.coverage.outcome == 'success' || steps.coverage.outcome == 'failure') }}
+        run: |
+          if [ -f docs/coverage.md ]; then cat docs/coverage.md >> "$GITHUB_STEP_SUMMARY"; fi
+      - name: Upload coverage reports
+        if: ${{ !cancelled() && (steps.coverage.outcome == 'success' || steps.coverage.outcome == 'failure') }}
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: coverage
+          retention-days: 7
+          if-no-files-found: warn
+          path: |
+            packages/shared/coverage/
+            apps/api/coverage/
+            apps/web/coverage/
+            docs/coverage.md
+      - name: Build all workspaces
+        run: npm run build
+      - name: Static production Docker verification
+        run: node scripts/docker/compose.mjs verify --static
+      - name: Full dependency audit (reporting only)
+        if: ${{ !cancelled() }}
+        continue-on-error: true
+        run: npm audit
+      - name: Production dependency audit (blocking)
+        if: ${{ !cancelled() }}
+        run: npm audit --omit=dev --audit-level=high
+  publish:
+    name: Publish versioned GHCR images
+    needs: checks
+    if: ${{ github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v') }}
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version-file: .nvmrc
+      - name: Build and publish API and web images
+        env:
+          GHCR_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PUBLIC_ORIGIN: ${{ vars.PUBLIC_ORIGIN }}
+        run: node scripts/ci/publish.mjs

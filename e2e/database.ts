@@ -22,3 +22,17 @@ export function e2eDatabaseUrl(environment: NodeJS.ProcessEnv): string {
   }
   return target.href;
 }
+
+// External mode is exclusively for the disposable GitHub-hosted Compose stack.
+export function e2eExternalOrigin(environment: NodeJS.ProcessEnv): string | undefined {
+  if (!environment.E2E_BASE_URL) return undefined;
+  if (
+    environment.GITHUB_ACTIONS !== "true" ||
+    environment.RUNNER_ENVIRONMENT !== "github-hosted" ||
+    !/^relay-ci-\d+-\d+$/.test(environment.COMPOSE_PROJECT_NAME ?? "") ||
+    environment.E2E_BASE_URL !== "http://localhost:8080" ||
+    new URL(e2eDatabaseUrl(environment)).pathname !== "/relay_chat_ci_e2e"
+  )
+    throw new Error("External E2E requires the isolated GitHub-hosted Compose stack.");
+  return environment.E2E_BASE_URL;
+}

@@ -1,7 +1,14 @@
 import { randomBytes, randomUUID } from "node:crypto";
 import { createServer } from "node:http";
 import { fileURLToPath } from "node:url";
-import { test as base, expect, request, type Page } from "@playwright/test";
+import {
+  test as base,
+  expect,
+  request,
+  type Page,
+  type WebSocketRoute,
+  type BrowserContext,
+} from "@playwright/test";
 import { preview } from "vite";
 import { createClient } from "redis";
 import argon2 from "argon2";
@@ -12,7 +19,7 @@ import { createDatabase } from "../apps/api/src/db/client.js";
 import { channels, users } from "../apps/api/src/db/schema.js";
 import { createSocketServer } from "../apps/api/src/socket.js";
 import { attachRedisAdapter } from "../apps/api/src/socket-adapter.js";
-import { e2eDatabaseUrl } from "./database.js";
+import { e2eDatabaseUrl, e2eExternalOrigin } from "./database.js";
 
 export const markupDisplayName = "<img src=x onerror=alert(1)>";
 
@@ -43,6 +50,7 @@ type ChatFixture = {
 export const test = base.extend<{ chat: ChatFixture }>({
   chat: async ({ browser }, use) => {
     const databaseUrl = e2eDatabaseUrl(process.env);
+    const externalOrigin = e2eExternalOrigin(process.env);
     if (!process.env.REDIS_URL) throw new Error("E2E requires REDIS_URL.");
     const cleanups: (() => Promise<unknown>)[] = [];
     const { db, pool } = createDatabase(databaseUrl);
@@ -95,35 +103,42 @@ export const test = base.extend<{ chat: ChatFixture }>({
       const address = server.address();
       if (!address || typeof address === "string") throw new Error("E2E API did not bind.");
       const target = `http://127.0.0.1:${address.port}`;
-      const web = await preview({
-        root: fileURLToPath(new URL("../apps/web", import.meta.url)),
-        preview: {
-          host: "127.0.0.1",
-          port: 0,
-          proxy: {
-            "/api": { target, changeOrigin: false },
-            "/socket.io": { target, ws: true, changeOrigin: false },
-          },
-        },
-      });
-      cleanups.push(
-        () =>
-          new Promise<void>((resolve, reject) =>
-            web.httpServer.close((error) => (error ? reject(error) : resolve())),
-          ),
-      );
-      const webAddress = web.httpServer.address();
-      if (!webAddress || typeof webAddress === "string") throw new Error("E2E web did not bind.");
-      const origin = `http://127.0.0.1:${webAddress.port}`;
-      server.on(
-        "request",
-        createApp({
-          ...options,
-          allowedOrigins: [origin],
-          nodeEnv: "test",
-          passwordCosts: { memoryCost: 1024, timeCost: 1, parallelism: 1 },
-        }),
-      );
+      const web = externalOrigin
+        ? undefined
+        : await preview({
+            root: fileURLToPath(new URL("../apps/web", import.meta.url)),
+            preview: {
+              host: "127.0.0.1",
+              port: 0,
+              proxy: {
+                "/api": { target, changeOrigin: false },
+                "/socket.io": { target, ws: true, changeOrigin: false },
+              },
+            },
+          });
+      if (web)
+        cleanups.push(
+          () =>
+            new Promise<void>((resolve, reject) =>
+              web.httpServer.close((error) => (error ? reject(error) : resolve())),
+            ),
+        );
+      const webAddress = web?.httpServer.address();
+      if (!externalOrigin && (!webAddress || typeof webAddress === "string"))
+        throw new Error("E2E web did not bind.");
+      const origin =
+        externalOrigin ??
+        `http://127.0.0.1:${typeof webAddress === "object" && webAddress ? webAddress.port : 0}`;
+      if (!externalOrigin)
+        server.on(
+          "request",
+          createApp({
+            ...options,
+            allowedOrigins: [origin],
+            nodeEnv: "test",
+            passwordCosts: { memoryCost: 1024, timeCost: 1, parallelism: 1 },
+          }),
+        );
       const io = createSocketServer({ ...options, allowedOrigins: [origin], httpServer: server });
       // Register IO cleanup even if adapter setup fails; close sockets before its Redis clients.
       const adapter: { close?: () => Promise<void> } = {};
@@ -131,14 +146,19 @@ export const test = base.extend<{ chat: ChatFixture }>({
         await adapter.close?.();
       });
       cleanups.push(() => new Promise<void>((resolve) => io.close(() => resolve())));
-      adapter.close = await attachRedisAdapter(io, redis, `${prefix}adapter`);
+      adapter.close = await attachRedisAdapter(
+        io,
+        redis,
+        externalOrigin ? "relay:socket.io" : `${prefix}adapter`,
+      );
+      const websocketRoutes = new Map<BrowserContext, WebSocketRoute>();
       const contexts: Awaited<ReturnType<typeof browser.newContext>>[] = [];
       const password = randomBytes(24).toString("base64url");
       const passwordHash = await argon2.hash(password, {
         type: argon2.argon2id,
-        memoryCost: 1024,
-        timeCost: 1,
-        parallelism: 1,
+        memoryCost: externalOrigin ? 65536 : 1024,
+        timeCost: externalOrigin ? 3 : 1,
+        parallelism: externalOrigin ? 4 : 1,
       });
       for (const displayName of ["E2E Alice", markupDisplayName]) {
         const [user] = await db
@@ -164,12 +184,23 @@ export const test = base.extend<{ chat: ChatFixture }>({
             data: { email: user.email, password },
           });
           expect(login.status()).toBe(200);
+          const storageState = await api.storageState();
+          if (externalOrigin)
+            cleanups.push(async () => {
+              for (const cookie of storageState.cookies)
+                if (cookie.name === "relay_session")
+                  await redis.del(`relay:session:${cookie.value}`);
+            });
           const context = await browser.newContext({
             baseURL: origin,
-            storageState: await api.storageState(),
+            storageState,
           });
           contexts.push(context);
           cleanups.push(() => context.close());
+          await context.routeWebSocket("**/socket.io/**", (route) => {
+            route.connectToServer();
+            websocketRoutes.set(context, route);
+          });
         } finally {
           await api.dispose();
         }
@@ -224,8 +255,8 @@ export const test = base.extend<{ chat: ChatFixture }>({
       // UI membership can finish before the client's channel sync joins its live room.
       // Wait on the real adapter state so the first typing/message event cannot race it.
       await expect
-        .poll(() =>
-          [...io.sockets.sockets.values()]
+        .poll(async () =>
+          (await io.fetchSockets())
             .filter((socket) => socket.rooms.has(`channel:${channel.id}`))
             .map((socket) => socket.data.userId)
             .sort(),
@@ -249,10 +280,11 @@ export const test = base.extend<{ chat: ChatFixture }>({
         },
         disconnectBob: async () => {
           await bob.context().setOffline(true);
-          // Chromium can retain established WS connections while offline. Closing Engine.IO
-          // preserves Socket.IO reconnect; a server-side Socket.IO disconnect would not.
-          for (const socket of io.sockets.sockets.values())
-            if (socket.data.userId === ownedUsers[1]) socket.conn.close();
+          // Chromium can retain established WS connections while offline. Close the
+          // forwarded transport, preserving Socket.IO's automatic reconnect behavior.
+          const route = websocketRoutes.get(bob.context());
+          if (!route) throw new Error("E2E websocket route was not established.");
+          route.close();
           await expect(bob.getByText("You’re offline", { exact: true })).toBeVisible();
         },
         reconnectBob: async () => {

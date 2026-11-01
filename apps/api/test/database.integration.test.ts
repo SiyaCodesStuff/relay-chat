@@ -45,7 +45,9 @@ async function expectPostgresConstraint(
 
   expect(outcome.error).toBeDefined();
   const cause =
-    outcome.error instanceof Error && "cause" in outcome.error ? outcome.error.cause : outcome.error;
+    outcome.error instanceof Error && "cause" in outcome.error
+      ? outcome.error.cause
+      : outcome.error;
 
   expect(cause).toMatchObject({ code, constraint });
 }
