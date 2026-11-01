@@ -26,6 +26,7 @@ const csrfHeader = "x-csrf-request";
 const authFailure = { error: "AUTHENTICATION_FAILED" };
 
 export type AuthAppOptions = {
+  trustProxy?: 0 | 1;
   passwordCosts?: Partial<PasswordCosts>;
   db: Database;
   redis: RedisConnection;
@@ -89,6 +90,7 @@ export function createApp(options: AuthAppOptions) {
   const registerRateLimit = options.registerRateLimit ?? { limit: 5, windowSeconds: 600 };
 
   app.disable("x-powered-by");
+  app.set("trust proxy", options.trustProxy ?? 0);
   app.use(securityHeaders(secureCookie));
   app.use((request, response, next) => {
     const origin = request.header("origin");
@@ -151,6 +153,23 @@ export function createApp(options: AuthAppOptions) {
     next();
   });
   app.get("/healthz", (_request, response) => response.status(200).json({ status: "ok" }));
+  app.get("/readyz", async (_request, response) => {
+    if (
+      !emptyRequestSchema.safeParse(_request.query).success ||
+      !emptyRequestSchema.safeParse(_request.body ?? {}).success
+    ) {
+      invalidRequest(response);
+      return;
+    }
+    try {
+      await options.db.execute(sql`SELECT 1`);
+      if ((await options.redis.sendCommand(["PING"])) !== "PONG") throw new Error();
+      response.status(200).json({ status: "ready" });
+    } catch {
+      // Dependency errors can contain connection details. Readiness reveals no values.
+      response.status(503).json({ status: "unavailable" });
+    }
+  });
 
   function requireCsrf(request: Request, response: Response, next: NextFunction) {
     if (request.header(csrfHeader) !== "1" || !allowedOrigins.has(request.header("origin") ?? "")) {

@@ -2,6 +2,7 @@ import { afterEach, expect, it, vi } from "vitest";
 
 const mocks = vi.hoisted(() => ({
   migrate: vi.fn(),
+  query: vi.fn(async () => undefined),
   end: vi.fn(),
   connect: vi.fn(),
   quit: vi.fn(),
@@ -21,10 +22,12 @@ vi.mock("redis", () => ({
   createClient: () => ({ on: mocks.redisOn, connect: mocks.connect, quit: mocks.quit }),
 }));
 vi.mock("../src/db/client.js", () => ({
-  createDatabase: () => ({ db: {}, pool: { end: mocks.end } }),
+  createDatabase: () => ({ db: {}, pool: { query: mocks.query, end: mocks.end } }),
 }));
 vi.mock("../src/app.js", () => ({ createApp: vi.fn(() => ({})) }));
-vi.mock("../src/socket.js", () => ({ createSocketServer: () => ({ close: mocks.ioClose }) }));
+vi.mock("../src/socket.js", () => ({
+  createSocketServer: vi.fn(() => ({ close: mocks.ioClose })),
+}));
 vi.mock("../src/socket-adapter.js", () => ({ attachRedisAdapter: async () => mocks.closeAdapter }));
 vi.mock("node:http", () => ({ createServer: () => ({ listen: mocks.listen }) }));
 
@@ -42,8 +45,9 @@ function environment() {
   vi.stubEnv("NODE_ENV", "test");
 }
 
-it("starts only after Redis connects and closes every resource on termination", async () => {
+it("starts after Redis and Postgres, forwards proxy settings, and closes every resource on termination", async () => {
   environment();
+  vi.stubEnv("TRUST_PROXY", "1");
   const signals = new Map<string, () => Promise<void>>();
   vi.spyOn(process, "once").mockImplementation(((event: string, handler: () => Promise<void>) => {
     signals.set(event, handler);
@@ -53,6 +57,19 @@ it("starts only after Redis connects and closes every resource on termination", 
   mocks.listen.mockImplementation((_port: number, _host: string, ready: () => void) => ready());
   await import("../src/server.js");
   expect(mocks.connect).toHaveBeenCalledOnce();
+  expect(mocks.query).toHaveBeenCalledExactlyOnceWith("SELECT 1");
+  expect(mocks.connect.mock.invocationCallOrder[0]).toBeLessThan(
+    mocks.query.mock.invocationCallOrder[0]!,
+  );
+  expect(mocks.query.mock.invocationCallOrder[0]).toBeLessThan(
+    mocks.listen.mock.invocationCallOrder[0]!,
+  );
+  expect((await import("../src/app.js")).createApp).toHaveBeenCalledWith(
+    expect.objectContaining({ trustProxy: 1 }),
+  );
+  expect((await import("../src/socket.js")).createSocketServer).toHaveBeenCalledWith(
+    expect.objectContaining({ trustProxy: 1 }),
+  );
   expect(info).toHaveBeenCalledWith("API listening on 127.0.0.1:3000");
   expect(signals.has("SIGINT")).toBe(true);
   const stopped = new Promise<void>((resolve) => mocks.end.mockImplementationOnce(resolve));
@@ -66,6 +83,20 @@ it("starts only after Redis connects and closes every resource on termination", 
   const onError = mocks.redisOn.mock.calls[0]?.[1] as () => void;
   onError();
   expect(error).toHaveBeenCalledWith("Redis connection error.");
+});
+
+it("sanitizes a failed Postgres startup check, closes dependencies and never listens", async () => {
+  environment();
+  mocks.query.mockRejectedValueOnce(new Error("private-driver-details"));
+  const error = vi.spyOn(console, "error").mockImplementation(() => {});
+  vi.spyOn(process, "exit").mockImplementation(() => {
+    throw new Error("startup stopped");
+  });
+  await expect(import("../src/server.js")).rejects.toThrow("startup stopped");
+  expect(error).toHaveBeenCalledExactlyOnceWith("Database startup check failed.");
+  expect(mocks.listen).not.toHaveBeenCalled();
+  expect(mocks.quit).toHaveBeenCalledOnce();
+  expect(mocks.end).toHaveBeenCalledOnce();
 });
 
 it("fails startup with field names and no environment values", async () => {

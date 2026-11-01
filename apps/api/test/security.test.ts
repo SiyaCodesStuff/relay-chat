@@ -8,7 +8,7 @@ import { browserContentSecurityPolicy } from "@relay-chat/shared";
 import { createDatabase } from "../src/db/client.js";
 
 const origin = "http://localhost:5173";
-function app(production = false, unavailable = false) {
+function app(production = false, unavailable = false, trustProxy: 0 | 1 = 0) {
   return createApp({
     db: {} as AuthAppOptions["db"],
     redis: {
@@ -22,6 +22,7 @@ function app(production = false, unavailable = false) {
       expire: async () => undefined,
     },
     nodeEnv: production ? "production" : "test",
+    trustProxy,
     allowedOrigins: [origin],
     sessionTtlSeconds: 60,
     sessionAbsoluteTtlSeconds: 60,
@@ -39,8 +40,11 @@ describe("HTTP security boundary", () => {
       await connection.pool.end();
     }
   });
-  it("sets Helmet, CSP, no-store, permissions and production HSTS headers", async () => {
-    const response = await request(app(true)).get("/healthz").expect(200);
+  it("sets Helmet, CSP, no-store, permissions and production HSTS on trusted HTTPS", async () => {
+    const response = await request(app(true, false, 1))
+      .get("/healthz")
+      .set("X-Forwarded-Proto", "https")
+      .expect(200);
     expect(response.headers["content-security-policy"]).toBe(
       `${browserContentSecurityPolicy}; frame-ancestors 'none'`,
     );
@@ -53,6 +57,10 @@ describe("HTTP security boundary", () => {
     expect(response.headers["x-powered-by"]).toBeUndefined();
     const local = await request(app()).get("/healthz");
     expect(local.headers["strict-transport-security"]).toBeUndefined();
+    const http = await request(app(true, false, 1)).get("/healthz");
+    expect(http.headers["strict-transport-security"]).toBeUndefined();
+    const forged = await request(app(true)).get("/healthz").set("X-Forwarded-Proto", "https");
+    expect(forged.headers["strict-transport-security"]).toBeUndefined();
   });
   it("rejects cross-origin reads and forged forwarded origins", async () => {
     for (const forbidden of [

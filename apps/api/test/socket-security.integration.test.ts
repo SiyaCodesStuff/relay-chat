@@ -115,11 +115,12 @@ const ownedChannels: string[] = [];
 const prefixes: string[] = [];
 const pendingClosers = new Set<() => Promise<void>>();
 
-async function setup() {
+async function setup(trustProxy: 0 | 1 = 0) {
   const prefix = `${filePrefix}${randomUUID()}:`;
   prefixes.push(prefix);
   const manual = clock();
   const options = {
+    trustProxy,
     db: connection.db,
     redis,
     allowedOrigins: [origin],
@@ -300,6 +301,23 @@ afterAll(async () => {
   } finally {
     await redis?.quit();
     await connection?.pool.end();
+  }
+});
+
+it("uses the real forwarded peer for handshake budgets only in the configured proxy topology", async () => {
+  const proxied = await setup(1);
+  for (const target of [fixture, proxied]) {
+    const socket = target.makeClient({
+      Origin: origin,
+      Cookie: target.owner.cookie,
+      "X-Forwarded-For": "198.51.100.8",
+    });
+    const connected = event(socket, "connect");
+    socket.connect();
+    await connected;
+    expect(await redis.get(`${target.prefix}rate-limit:handshake:198.51.100.8`)).toBe(
+      target.trustProxy === 1 ? "1" : null,
+    );
   }
 });
 

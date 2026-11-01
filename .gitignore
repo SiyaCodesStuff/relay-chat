@@ -21,3 +21,6 @@ e2e/.auth/
 blob-report/
 .vite/
 *:Zone.Identifier
+
+# Generated from the actual web build for Nginx verification.
+docker/generated/
