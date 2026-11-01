@@ -1,0 +1,49 @@
+name: Manual Docker E2E
+on:
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: manual-e2e-${{ github.ref }}
+  cancel-in-progress: false
+jobs:
+  e2e:
+    name: Real Compose stack and Chromium security journeys
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version-file: .nvmrc
+          cache: npm
+      - name: Install locked dependencies without running lifecycle scripts
+        run: npm ci --ignore-scripts
+      - name: Install Chromium and Linux browser dependencies
+        run: npx --no-install playwright install --with-deps chromium
+      - name: Generate ephemeral CI configuration
+        run: node scripts/ci/environment.mjs e2e
+      - name: Build host test tooling and application
+        run: npm run build
+      - name: Build and start fresh Prompt 14 stack; wait for health
+        run: |
+          node scripts/docker/compose.mjs build
+          node scripts/docker/compose.mjs up -d --wait
+      - name: Verify migration completion, both replicas, HTTP and WebSocket security
+        run: node scripts/docker/compose.mjs verify
+      - name: Resolve private data-service addresses on the Linux runner
+        run: node scripts/ci/environment.mjs compose-addresses
+      - name: Run existing Playwright tests through Nginx
+        run: npm run test:e2e
+      - name: Report result
+        if: ${{ always() }}
+        env:
+          JOB_STATUS: ${{ job.status }}
+        run: |
+          printf 'Docker E2E result before cleanup: **%s**\n' "$JOB_STATUS" >> "$GITHUB_STEP_SUMMARY"
+      - name: Destroy only this run's ephemeral containers, networks and volumes
+        if: ${{ always() && env.COMPOSE_PROJECT_NAME != '' }}
+        run: |
+          case "$COMPOSE_PROJECT_NAME" in relay-ci-"$GITHUB_RUN_ID"-"$GITHUB_RUN_ATTEMPT") ;; *) exit 1 ;; esac
+          node scripts/docker/compose.mjs down --volumes --remove-orphans
