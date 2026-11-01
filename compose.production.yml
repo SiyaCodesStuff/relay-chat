@@ -1,0 +1,101 @@
+name: relay-chat-production
+
+x-api: &api
+  image: relay-chat-api:local
+  build:
+    context: .
+    dockerfile: docker/api.Dockerfile
+  init: true
+  read_only: true
+  tmpfs: [/tmp]
+  cap_drop: [ALL]
+  security_opt: [no-new-privileges:true]
+  stop_grace_period: 30s
+  restart: unless-stopped
+  environment: &api-environment
+    NODE_ENV: production
+    HOST: 0.0.0.0
+    API_PORT: "3000"
+    TRUST_PROXY: "1"
+    DATABASE_URL: ${DOCKER_DATABASE_URL:?Set DOCKER_DATABASE_URL using the postgres service hostname}
+    REDIS_URL: redis://redis:6379
+    SESSION_SECRET: ${SESSION_SECRET:?Set SESSION_SECRET}
+    ALLOWED_ORIGINS: ${DOCKER_ALLOWED_ORIGINS:?Use scripts/docker/compose.mjs to derive allowed origins}
+    SESSION_TTL_SECONDS: ${SESSION_TTL_SECONDS:-1800}
+    SESSION_ABSOLUTE_TTL_SECONDS: ${SESSION_ABSOLUTE_TTL_SECONDS:-86400}
+    ARGON2_MEMORY_COST: ${ARGON2_MEMORY_COST:-65536}
+    ARGON2_TIME_COST: ${ARGON2_TIME_COST:-3}
+    ARGON2_PARALLELISM: ${ARGON2_PARALLELISM:-4}
+  networks: [backend]
+  depends_on:
+    postgres: { condition: service_healthy }
+    redis: { condition: service_healthy }
+    migrate: { condition: service_completed_successfully }
+
+services:
+  postgres:
+    image: postgres:17-alpine@sha256:266d3c257594e195b309ae9d1805e54c788f1d7b375f56bf6c367aac6c917e7b
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-relay_chat}
+      POSTGRES_USER: ${POSTGRES_USER:?Set POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD}
+    volumes: [postgres_data:/var/lib/postgresql/data]
+    networks: [backend]
+    restart: unless-stopped
+    healthcheck:
+      test: [CMD-SHELL, 'pg_isready -U "$$POSTGRES_USER" -d "$$POSTGRES_DB"']
+      interval: 5s
+      timeout: 3s
+      retries: 10
+      start_period: 5s
+  redis:
+    image: redis:8-alpine@sha256:21090af93f8324db2f0f0f4f38a7c60369d47d917e000c3423d89d2ae2883537
+    command: [redis-server, --appendonly, "yes"]
+    volumes: [redis_data:/data]
+    networks: [backend]
+    restart: unless-stopped
+    healthcheck:
+      test: [CMD, redis-cli, ping]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+      start_period: 5s
+  migrate:
+    <<: *api
+    command: [node, dist/db/migrate.js, dev]
+    restart: "no"
+    healthcheck: { disable: true }
+    environment:
+      DATABASE_URL: ${DOCKER_DATABASE_URL:?Set DOCKER_DATABASE_URL}
+    depends_on:
+      postgres: { condition: service_healthy }
+  api-1:
+    <<: *api
+  api-2:
+    <<: *api
+  nginx:
+    image: relay-chat-web:local
+    build:
+      context: .
+      dockerfile: docker/web.Dockerfile
+      args:
+        PUBLIC_ORIGIN: ${PUBLIC_ORIGIN:-http://localhost:8080}
+    read_only: true
+    tmpfs: [/tmp]
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    stop_grace_period: 30s
+    restart: unless-stopped
+    ports: ["127.0.0.1:${WEB_PORT:-8080}:8080"]
+    networks: [frontend, backend]
+    depends_on:
+      api-1: { condition: service_healthy }
+      api-2: { condition: service_healthy }
+
+networks:
+  frontend:
+  backend:
+    internal: true
+volumes:
+  postgres_data:
+  redis_data:

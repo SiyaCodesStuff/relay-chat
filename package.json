@@ -14,9 +14,9 @@
   "scripts": {
     "dev": "node scripts/dev.mjs",
     "build": "npm run build --workspaces --if-present",
-    "lint": "npm run lint --workspaces --if-present && eslint e2e playwright.config.ts scripts/coverage*.mjs",
+    "lint": "npm run lint --workspaces --if-present && eslint e2e playwright.config.ts scripts/coverage*.mjs scripts/docker",
     "typecheck": "npm run build --workspace=@relay-chat/shared && npm run typecheck --workspaces --if-present && tsc -p tsconfig.e2e.json",
-    "test": "npm run test --workspaces --if-present",
+    "test": "npm run test --workspaces --if-present && node --test scripts/docker/*.test.mjs",
     "test:coverage": "npm run build --workspace=@relay-chat/shared && node scripts/coverage.mjs",
     "test:e2e": "npm run build && node --env-file-if-exists=.env --import tsx node_modules/@playwright/test/cli.js test",
     "test:integration": "npm run test:integration --workspace=@relay-chat/api",

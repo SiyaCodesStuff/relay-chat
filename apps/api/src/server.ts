@@ -13,6 +13,14 @@ redis.on("error", () => {
 await redis.connect();
 
 const { db, pool } = createDatabase(env.DATABASE_URL);
+try {
+  await pool.query("SELECT 1");
+} catch {
+  await redis.quit();
+  await pool.end();
+  console.error("Database startup check failed.");
+  process.exit(1);
+}
 const allowedOrigins = env.ALLOWED_ORIGINS.split(",")
   .map((origin) => origin.trim())
   .filter(Boolean);
@@ -21,6 +29,7 @@ const app = createApp({
   redis,
   allowedOrigins,
   nodeEnv: env.NODE_ENV,
+  trustProxy: env.TRUST_PROXY,
   passwordCosts: {
     memoryCost: env.ARGON2_MEMORY_COST,
     timeCost: env.ARGON2_TIME_COST,
@@ -31,6 +40,7 @@ const app = createApp({
 });
 const httpServer = createServer(app);
 const io = createSocketServer({
+  trustProxy: env.TRUST_PROXY,
   httpServer,
   db,
   redis,

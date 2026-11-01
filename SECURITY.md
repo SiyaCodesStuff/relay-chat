@@ -4,7 +4,7 @@
 
 | Control               | Implementation                                                                                                                                                                                                                                              | Tests                                                                                                                                                                                          |
 | --------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| HTTP security headers | `apps/api/src/security.ts`: Helmet, `nosniff`, referrer policy, framing protection, cross-origin resource/opener policies, disabled browser permissions, `Cache-Control: no-store`; HSTS only in production.                                                | `apps/api/test/security.test.ts`: “sets Helmet, CSP, no-store, permissions and production HSTS headers”.                                                                                       |
+| HTTP security headers | `apps/api/src/security.ts`: Helmet, `nosniff`, referrer policy, framing protection, cross-origin resource/opener policies, disabled browser permissions, `Cache-Control: no-store`; HSTS only in production over direct or explicitly trusted HTTPS.        | `apps/api/test/security.test.ts`: “sets Helmet, CSP, no-store, permissions and production HSTS on trusted HTTPS”.                                                                              |
 | CSP                   | Default deny; scripts only from this origin or the reviewed SHA-256 theme hash, no script `unsafe-inline`/`unsafe-eval`, no event-handler attributes, objects, or base URLs; same-origin connections/forms/images/fonts. API adds `frame-ancestors 'none'`. | API header test and `apps/web/test/security.test.ts`: exact theme bytes/hash and policy placement.                                                                                             |
 | Pre-paint theme       | Vite inlines the blocking head bootstrap from `apps/web/public/theme.js` and fails the build if its hash differs from `packages/shared/src/security.ts`. Production HTML receives a CSP meta tag before the script.                                         | Web CSP tests plus `apps/web/test/theme.test.ts` for theme behavior.                                                                                                                           |
 | Text and links        | React text nodes for messages, display names and channel names; no HTML injection. Autolinks allow only HTTP/HTTPS, exclude embedded credentials, and set `target="_blank" rel="noopener noreferrer"`.                                                      | `apps/web/test/chat.test.tsx`: stored XSS message/display name rendering, dangerous-protocol cases, safe links. Auth/socket integration tests persist and return attack strings as plain data. |
@@ -35,7 +35,7 @@ escaping it.
 | Boundary        | Limit/control                                                                                                                                                                                                                                                                                                                                                                                | Tests                                                                                                                                                                           |
 | --------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | REST            | Shared Zod schemas, strict auth/channel payloads, empty-body/query validation for endpoints with no inputs, history limit 1–100/default 50; 16 KiB JSON body, 2048-character URL, 4096-character cookie header. Oversize returns a generic 413, malformed/unsupported JSON a generic 400, non-JSON bodies 415. JSON inflation is disabled. Node's HTTP parser also imposes its header limit. | API security input-boundary tests; auth display-name length test; channel history pagination tests.                                                                             |
-| HTTP flood      | Atomic Redis fixed windows: 120 `/api/v1` requests/IP/minute across instances, including malformed requests before body parsing; registration 5/IP/10 minutes; login 10/IP/10 minutes. Express does not trust spoofed forwarding addresses. Redis errors fail closed.                                                                                                                        | Auth integration: shared HTTP/login limits across two apps, forged `X-Forwarded-For`; API test: Redis failure gives fixed log and generic error.                                |
+| HTTP flood      | Atomic Redis fixed windows: 120 `/api/v1` requests/IP/minute across instances, including malformed requests before body parsing; registration 5/IP/10 minutes; login 10/IP/10 minutes. Forwarding addresses are ignored by default; the private Docker topology explicitly trusts one Nginx hop which overwrites them. Redis errors fail closed.                                             | Auth integration: shared HTTP/login limits across two apps, forged `X-Forwarded-For`; API test: Redis failure gives fixed log and generic error.                                |
 | Handshake flood | Redis-backed 30 allowed-Origin handshake attempts/IP/minute, shared across instances, before upgrade/session lookup. Invalid Origin rejected before Redis/session work.                                                                                                                                                                                                                      | Socket integration: Redis handshake budget shared across two listening API instances.                                                                                           |
 | Socket packets  | 16 KiB transport frame cap; shared Zod event schemas, 4000-character messages and 128-character client IDs. Packet middleware counts unknown/malformed/no-ack packets too: 30/socket/10 seconds plus 120/user/10 seconds across tabs/instances. Errors are typed; new connections do not reset the user budget.                                                                              | Socket integration: 4001-character rejection, oversized frame disconnect, no-ack flood, shared user budget on a new tab, no extra persisted messages.                           |
 | Typing/presence | Typing throttled and auto-expiring; no message persistence for typing. Redis connection leases expire crashed sockets; counts cover tabs and instances.                                                                                                                                                                                                                                      | Socket integration: typing expiry, two tabs, crash lease expiry, multi-instance presence/delivery.                                                                              |
@@ -65,11 +65,12 @@ escaping it.
   not cache authenticated responses, log Cookie/Set-Cookie/Authorization headers,
   or enable raw database/request logging in an upstream proxy or service.
 - Rate limits are fixed-window application controls, not volumetric DDoS
-  protection. Add connection/body/header controls at the ingress. The app does not
-  trust proxy forwarding headers; behind a proxy, all users may share its IP
-  budget until a narrowly scoped proxy-trust policy is configured. Do not simply
-  enable unrestricted `trust proxy`. The health endpoint is outside the Redis
-  request budget. Redis/database availability remains necessary.
+  protection. Add connection/body/header controls at the ingress. The default `TRUST_PROXY=0` ignores forwarding headers. The Docker stack uses
+  exactly one private Nginx hop (`TRUST_PROXY=1`), with forwarding headers
+  overwritten at ingress for both HTTP and socket handshake budgets. Keep the
+  APIs private and review topology changes; unrestricted trust is rejected.
+  Health/readiness endpoints are outside the Redis request budget. Redis/database
+  availability remains necessary.
 - Socket recipients are checked for current membership/ban and a valid session
   before broadcasts, including remote-instance sockets. Passive delivery does not
   extend idle expiry. The existing heartbeat disconnects expired/revoked sessions;
@@ -78,6 +79,24 @@ escaping it.
 - Generic incorrect-login responses do not equalize lookup/hash timing and
   registration reports an existing email with 409. Account enumeration via timing
   or registration remains possible within rate limits.
+
+## Container ingress
+
+[Docker setup](docs/docker.md) uses a separate six-service Compose project with
+private data/API services and only a loopback Nginx host port. The web image
+generates its HTTP CSP from the built theme script, including its exact SHA-256
+and the configured WS/WSS origin, and verifies it during the build. Local HTTP
+sets no HSTS; production cookie flags, CSRF/Origin checks and WebSocket-only
+authentication remain enabled. Access logging is disabled, mutation retries are
+disabled, and the proxy preserves server JSON error envelopes.
+
+Tests: `apps/api/test/deployment.test.ts`, the trusted-HTTPS cases in
+`security.test.ts`, the real forwarded-handshake integration case, and
+`scripts/docker/*.test.mjs`. `compose.mjs verify --static` checks configuration;
+the running-stack verifier checks headers/hash, health, port publication and
+actual WebSocket routing. These running-container checks require the operator
+to start the stack. TLS certificates/termination are an explicit deployment
+responsibility; the supplied localhost stack is HTTP.
 
 ## Known issues
 

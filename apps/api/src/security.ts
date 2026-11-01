@@ -24,9 +24,11 @@ export function securityHeaders(production: boolean): RequestHandler[] {
   return [
     helmet({
       contentSecurityPolicy: false,
-      strictTransportSecurity: production ? { maxAge: 31_536_000 } : false,
+      strictTransportSecurity: false,
     }),
-    (_request, response, next) => {
+    (request, response, next) => {
+      if (production && request.secure)
+        response.setHeader("Strict-Transport-Security", "max-age=31536000; includeSubDomains");
       response.setHeader(
         "Content-Security-Policy",
         `${browserContentSecurityPolicy}; frame-ancestors 'none'`,

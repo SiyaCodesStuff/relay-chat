@@ -26,6 +26,7 @@ import { channelMembers, messages, users } from "./db/schema.js";
 import { createPresenceStore } from "./presence.js";
 import { createRedisRateLimiter } from "./auth/rate-limit.js";
 import { originAllowlist } from "./security.js";
+import { socketClientAddress } from "./proxy.js";
 
 const maxSocketPayloadBytes = 16 * 1024;
 const socketEventLimit = 30;
@@ -35,6 +36,7 @@ type SocketData = {
 };
 
 export type SocketServerOptions = {
+  trustProxy?: 0 | 1;
   scheduler?: SocketScheduler;
   httpServer: HttpServer;
   db: Database;
@@ -136,7 +138,7 @@ export function createSocketServer(options: SocketServerOptions) {
           (request.headers.cookie?.length ?? 0) > 4096
         )
           return false;
-        return rateLimit(request.socket.remoteAddress ?? "unknown", "handshake", 30, 60);
+        return rateLimit(socketClientAddress(request, options.trustProxy), "handshake", 30, 60);
       })().then(
         (allowed) => callback(null, allowed),
         () => callback("Unauthorized socket connection.", false),
