@@ -1,0 +1,76 @@
+{
+  "description": "Operator-labelled synchronous commit diagnostic experiments at 64 connections. Historical observations, not a capacity estimate.",
+  "source": "Summarized from existing ignored local reports; no experiment was rerun during release documentation.",
+  "connections": 64,
+  "apiInstances": 2,
+  "messagesPerSecondPerConnection": 1,
+  "channelSize": 8,
+  "conditions": [
+    {
+      "synchronousCommit": "on",
+      "medianP95DeliveryMs": 251,
+      "runs": [
+        {
+          "sourceFile": "ab-on-1.json",
+          "sourceSha256": "dfa65b9b45154d9143c4148601c9db0d946c2beeff21442fac77cc873594ebda",
+          "measuredAt": "2026-10-31T10:04:03.146Z",
+          "p95DeliveryMs": 251,
+          "lost": 0,
+          "duplicates": 0,
+          "reconciled": true
+        },
+        {
+          "sourceFile": "ab-on-2.json",
+          "sourceSha256": "6a8602310e8addc73bdd2c579bbdee81ed9c742cf3d14db78ea60f5e3e83de2f",
+          "measuredAt": "2026-10-31T10:05:13.562Z",
+          "p95DeliveryMs": 379,
+          "lost": 0,
+          "duplicates": 0,
+          "reconciled": true
+        },
+        {
+          "sourceFile": "ab-on-3.json",
+          "sourceSha256": "1132753c0cc557a9ae68e6f2cb4d1b2398d52fae274000a266dc7a0a11b7e899",
+          "measuredAt": "2026-10-31T10:06:26.400Z",
+          "p95DeliveryMs": 36,
+          "lost": 0,
+          "duplicates": 0,
+          "reconciled": true
+        }
+      ]
+    },
+    {
+      "synchronousCommit": "off",
+      "medianP95DeliveryMs": 28,
+      "runs": [
+        {
+          "sourceFile": "ab-off-1.json",
+          "sourceSha256": "fcfa17a4991fb58352298bc67d601d440d8ae5d171492ccde0ddd85eb7ae79b5",
+          "measuredAt": "2026-10-31T10:04:39.195Z",
+          "p95DeliveryMs": 40,
+          "lost": 0,
+          "duplicates": 0,
+          "reconciled": true
+        },
+        {
+          "sourceFile": "ab-off-2.json",
+          "sourceSha256": "56807807a7a7c0ec5897ecab9e7107d1899b3d461aa3cce1129e1acc4b5ff66e",
+          "measuredAt": "2026-10-31T10:05:49.653Z",
+          "p95DeliveryMs": 28,
+          "lost": 0,
+          "duplicates": 0,
+          "reconciled": true
+        },
+        {
+          "sourceFile": "ab-off-3.json",
+          "sourceSha256": "ca07e5972b7651b2ad3d39f0f73792628b99295f314a735420017408ef1ec134",
+          "measuredAt": "2026-10-31T10:06:58.573Z",
+          "p95DeliveryMs": 19,
+          "lost": 0,
+          "duplicates": 0,
+          "reconciled": true
+        }
+      ]
+    }
+  ]
+}

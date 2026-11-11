@@ -225,3 +225,36 @@ At 64 users there were eight independent channels, all contending on the same
 current lock. The proposed change targets that observed queue directly; it does
 not promise to eliminate single-channel disk/COMMIT stalls, which also explain
 some low-load variability. No fix or production configuration change is included.
+
+### Synchronous commit diagnostics and decision
+
+Release preparation verified six pre-existing local diagnostic reports at 64
+connections. A credential-free summary is now preserved in
+[commit-diagnostics.json](commit-diagnostics.json), including the original file
+names, SHA-256 digests, timestamps and reconciliation results. The source files
+were `results/ab-on-1.json` through `ab-on-3.json` and their `ab-off` counterparts;
+that local results directory remains ignored. The ON/OFF labels come from the
+operator's experiment files, not a new configuration measurement or rerun.
+
+| Operator-labelled setting | Sorted delivery p95 observations | Median of run p95s |
+| ------------------------- | -------------------------------- | -----------------: |
+| Synchronous commit ON     | 36, 251, 379 ms                  |             251 ms |
+| Synchronous commit OFF    | 19, 28, 40 ms                    |              28 ms |
+
+Each used two APIs, 64 connections, one message per connection per second and
+channels of eight members. All six reconciled with zero lost and duplicate
+deliveries. A median of three run-level p95s is not a pooled delivery percentile
+or a reliable capacity estimate. The initial 5141 ms result did not reproduce
+consistently, so the proposed per-channel lock optimization remains unimplemented:
+its benefit needs repeatable evidence, and it changes core cursor ordering logic.
+
+**Synchronous commit remains enabled.** Disabling it was a diagnostic experiment,
+not a recommended production optimization. An asynchronous commit can return
+success before WAL is durable; a database crash could then lose an acknowledged
+message. Zero loss in these non-crash runs does not test that failure mode.
+
+The summary is intended to be committed as project evidence. Its reviewed fields
+contain only workload/measurement data and provenance: source basenames,
+timestamps and result-file checksums, not credentials or password hashes. Keep
+the underlying `results/` directory ignored. Release preparation rechecked all
+six source checksums, measured fields and both medians; no benchmark was rerun.
