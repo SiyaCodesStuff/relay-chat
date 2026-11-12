@@ -2,14 +2,14 @@
 
 ## Browser boundary
 
-| Control               | Implementation                                                                                                                                                                                                                                              | Tests                                                                                                                                                                                          |
-| --------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| HTTP security headers | `apps/api/src/security.ts`: Helmet, `nosniff`, referrer policy, framing protection, cross-origin resource/opener policies, disabled browser permissions, `Cache-Control: no-store`; HSTS only in production over direct or explicitly trusted HTTPS.        | `apps/api/test/security.test.ts`: “sets Helmet, CSP, no-store, permissions and production HSTS on trusted HTTPS”.                                                                              |
-| CSP                   | Default deny; scripts only from this origin or the reviewed SHA-256 theme hash, no script `unsafe-inline`/`unsafe-eval`, no event-handler attributes, objects, or base URLs; same-origin connections/forms/images/fonts. API adds `frame-ancestors 'none'`. | API header test and `apps/web/test/security.test.ts`: exact theme bytes/hash and policy placement.                                                                                             |
-| Pre-paint theme       | Vite inlines the blocking head bootstrap from `apps/web/public/theme.js` and fails the build if its hash differs from `packages/shared/src/security.ts`. Production HTML receives a CSP meta tag before the script.                                         | Web CSP tests plus `apps/web/test/theme.test.ts` for theme behavior.                                                                                                                           |
-| Text and links        | React text nodes for messages, display names and channel names; no HTML injection. Autolinks allow only HTTP/HTTPS, exclude embedded credentials, and set `target="_blank" rel="noopener noreferrer"`.                                                      | `apps/web/test/chat.test.tsx`: stored XSS message/display name rendering, dangerous-protocol cases, safe links. Auth/socket integration tests persist and return attack strings as plain data. |
-| HTTP Origin/CSRF      | Every supplied Origin must exactly match a validated HTTP(S) allowlist. Every state-changing route additionally requires an allowed Origin and `x-csrf-request: 1`. No wildcard/suffix/reflected Origin acceptance, no trust in forwarded Origin headers.   | API security tests: cross-origin reads and forged forwarded origins; auth integration: CSRF rejection and forged allowed Origin with tampered cookies.                                         |
-| Socket Origin         | Origin required and checked both before the Engine.IO upgrade and during Socket.IO authentication; websocket-only transport.                                                                                                                                | `apps/api/test/socket.integration.test.ts`: cross-origin, missing/null Origin, suffix spoof, tampered/duplicate cookies, forged allowed Origin without a valid session; polling rejection.     |
+| Control               | Implementation                                                                                                                                                                                                                                                                                         | Tests                                                                                                                                                                                          |
+| --------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| HTTP security headers | `apps/api/src/security.ts`: Helmet, `nosniff`, referrer policy, framing protection, cross-origin resource/opener policies, disabled browser permissions, `Cache-Control: no-store`; HSTS only in production over direct or explicitly trusted HTTPS.                                                   | `apps/api/test/security.test.ts`: “sets Helmet, CSP, no-store, permissions and production HSTS on trusted HTTPS”.                                                                              |
+| CSP                   | Default deny; scripts only from this origin or the reviewed SHA-256 theme hash, no script `unsafe-inline`/`unsafe-eval`, no event-handler attributes, objects, or base URLs; same-origin connections/forms/images/fonts. API adds `frame-ancestors 'none'`.                                            | API header test and `apps/web/test/security.test.ts`: exact theme bytes/hash and policy placement.                                                                                             |
+| Pre-paint theme       | Vite inlines the blocking head bootstrap from `apps/web/public/theme.js` and fails the build if its hash differs from `packages/shared/src/security.ts`. The ordinary Vite build uses a CSP meta tag before the script; Docker verifies the same hash and supplies an authoritative Nginx HTTP policy. | Web CSP tests plus `apps/web/test/theme.test.ts` for theme behavior.                                                                                                                           |
+| Text and links        | React text nodes for messages, display names and channel names; no HTML injection. Autolinks allow only HTTP/HTTPS, exclude embedded credentials, and set `target="_blank" rel="noopener noreferrer"`.                                                                                                 | `apps/web/test/chat.test.tsx`: stored XSS message/display name rendering, dangerous-protocol cases, safe links. Auth/socket integration tests persist and return attack strings as plain data. |
+| HTTP Origin/CSRF      | Every supplied Origin must exactly match a validated HTTP(S) allowlist. Every state-changing route additionally requires an allowed Origin and `x-csrf-request: 1`. No wildcard/suffix/reflected Origin acceptance, no trust in forwarded Origin headers.                                              | API security tests: cross-origin reads and forged forwarded origins; auth integration: CSRF rejection and forged allowed Origin with tampered cookies.                                         |
+| Socket Origin         | Origin required and checked both before the Engine.IO upgrade and during Socket.IO authentication; websocket-only transport.                                                                                                                                                                           | `apps/api/test/socket.integration.test.ts`: cross-origin, missing/null Origin, suffix spoof, tampered/duplicate cookies, forged allowed Origin without a valid session; polling rejection.     |
 
 The canonical CSP is exported as `browserContentSecurityPolicy` by the shared
 package. `style-src 'unsafe-inline'` is intentionally limited to styles because
@@ -52,11 +52,12 @@ escaping it.
   requests without an Origin are supported; mutations and socket handshakes must
   supply one. The integration tests deliberately send forged headers.
 - Helmet headers cover Express responses, not separately hosted HTML or raw
-  websocket upgrade responses. The built HTML carries its CSP in a meta tag, but
-  framing protection, HSTS and other HTTP-only directives must also be configured
-  on the production static host/reverse proxy. Set `frame-ancestors 'none'` there;
-  copy the production CSP from `packages/shared/src/security.ts`. Check the final
-  browser-facing response headers after deployment.
+  websocket upgrade responses. The ordinary Vite build carries CSP in a meta tag;
+  the supplied Docker/Nginx build replaces that meta policy with verified HTTP
+  headers, including framing protection. Other static hosts still need the
+  corresponding HTTP-only controls. Configure HSTS only at an actual HTTPS
+  ingress and check the final browser-facing headers after deployment. See
+  [Docker CSP and HTTPS notes](docs/docker.md#csp-https-and-verification).
 - Vite HMR needs development inline code; the strict HTML policy is emitted for
   production builds/preview, not the dev server. No production policy is weakened
   for HMR. CSP tests verify exact source/hash/policy bytes and output structure;
@@ -100,14 +101,25 @@ responsibility; the supplied localhost stack is HTTP.
 
 ## Known issues
 
-- `npm audit` reports 4 moderate advisories ([GHSA-67mh-4wv8-2f99](https://github.com/advisories/GHSA-67mh-4wv8-2f99)) reached through `drizzle-kit` → `@esbuild-kit/esm-loader` → `@esbuild-kit/core-utils` → `esbuild <=0.24.2`. Scope: development tooling only; these four findings are absent with `--omit=dev`. The advisory concerns esbuild's development server, which `drizzle-kit` does not start. The automated "fix" would downgrade `drizzle-kit` to 0.18.1 and is deliberately declined. Action: recheck when `drizzle-kit` ships a release that no longer depends on `@esbuild-kit`.
-- The audit on 2026-10-25 additionally reports 1 high production advisory in
+Audit recheck on **2026-11-11**: `npm audit --omit=dev --audit-level=high`
+reported **0 vulnerabilities** (exit 0). Full `npm audit` reported **11 moderate
+findings** (exit 1), all absent from the production-only audit. These are current
+observations, not a guarantee about future dependency advisories. No dependency,
+lockfile or automatic audit fix was changed for release preparation.
+
+- Four of the full audit findings are moderate advisories ([GHSA-67mh-4wv8-2f99](https://github.com/advisories/GHSA-67mh-4wv8-2f99)) reached through `drizzle-kit` → `@esbuild-kit/esm-loader` → `@esbuild-kit/core-utils` → `esbuild <=0.24.2`. Scope: development tooling only; these four findings are absent with `--omit=dev`. The advisory concerns esbuild's development server, which `drizzle-kit` does not start. The automated "fix" would downgrade `drizzle-kit` to 0.18.1 and is deliberately declined. Action: recheck when `drizzle-kit` ships a release that no longer depends on `@esbuild-kit`.
+- Additional current development-tool findings involve `minimatch 7.0.0 - 11.0.0`
+  ([GHSA-g3hv-75wg-m249](https://github.com/advisories/GHSA-g3hv-75wg-m249)) through
+  TypeScript ESLint tooling. The suggested forced fixes include breaking
+  downgrades and were not applied. Review compatible updates separately; retain
+  the full audit report instead of suppressing these findings.
+- Historical observation: the audit on 2026-10-25 reported 1 high production advisory in
   `express -> body-parser@2.3.0`: [GHSA-27r3-jxmh-p828](https://github.com/advisories/GHSA-27r3-jxmh-p828), denial of service from trailing bytes in compressed request bodies.
-  Both full audit and `npm audit --omit=dev` exit 1; production audit now reports
-  this one finding, not zero. This application disables JSON inflation and tests
+  Both full and production audits exited 1 at that time. This advisory is not
+  reported by the current production audit above. This application disables JSON inflation and tests
   compressed-input rejection, blocking that parser path. The dependency advisory
-  remains unresolved; upgrade the affected dependency through a separately
-  authorized dependency update. No automated audit fixes were applied.
+  was recorded as unresolved in that historical review. No dependency update or
+  automated audit fix was performed as part of this documentation change.
 
 Development servers, including Vite and `tsx --watch`, must be bound only to localhost and must never be exposed to other machines.
 
@@ -125,11 +137,13 @@ npm run build
 npm audit --omit=dev
 ```
 
-The security review's sequential checks passed typecheck, lint, 65 unit/UI tests,
+The historical security review's sequential checks passed typecheck, lint, 65 unit/UI tests,
 and 30 integration tests (including real sockets and two API instances). The web
 production build passed; its output was checked for exact inline theme bytes,
-matching SHA-256, and policy placement before scripts. The audit exits 1 for the
-production advisory above.
+matching SHA-256, and policy placement before scripts. That review's audit exited 1 for the historical
+production advisory; the current audit recheck is recorded above. See
+[release preparation](docs/release.md#validation-record) for fresh validation
+results instead of treating these historical counts as current proof.
 
 Initial validation found a CSP test asset-URL loader error (fixed), two existing
 UI readiness assertion failures during overlapping build/test execution (passed
